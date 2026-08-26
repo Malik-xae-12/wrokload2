@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/features/ingestion/dataingestionapp.tsx","./src/features/ingestion/types.ts","./src/features/ingestion/services/ingestionapi.ts","./src/lib/msal.ts","./src/lib/utils.ts","./src/routes/approutes.tsx","./src/services/api/axiosclient.ts","./src/utils/cn.ts"],"version":"5.9.3"}

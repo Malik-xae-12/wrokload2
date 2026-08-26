@@ -1,0 +1,13 @@
+{
+    "Workload_Display_Name": "Data Ingestion Accelerator",
+    "Workload_Full_Display_Name": "Microsoft Fabric Data Ingestion Accelerator",
+    "Workload_Description": "Automated Medallion architecture provisioning and data ingestion engine for Microsoft Fabric.",
+    "Workload_Hub_Slogan": "Accelerate enterprise database ingestion into Microsoft Fabric.",
+    "Workload_Hub_Description": "Automate Medallion Lakehouses, Gold & Metadata Warehouses, and data ingestion pipelines directly inside Microsoft Fabric.",
+    "Workload_Hub_GetStarted_1_Title": "Get Started with Data Ingestion",    
+    "Workload_Hub_GetStarted_1_Sub_Title": "Configure source databases and provision targets",
+    "Workload_Hub_GetStarted_1_Description": "Connect your Azure SQL or On-Prem databases and generate Fabric medallion assets.",
+    "HelloWorldItem_DisplayName": "Data Ingestion Pipeline",
+    "HelloWorldItem_DisplayName_Plural": "Data Ingestion Pipelines",
+    "HelloWorldItem_Description": "Configure database discovery, medallion lakehouses, and automated data ingestion pipelines"
+}

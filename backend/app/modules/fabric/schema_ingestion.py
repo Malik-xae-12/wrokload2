@@ -1,0 +1,143 @@
+"""Pydantic schemas for Azure SQL to Fabric ingestion and incremental watermark sync."""
+
+from datetime import datetime
+from pydantic import BaseModel, Field
+
+
+class SourceCredentials(BaseModel):
+    server: str = Field(..., description="Azure SQL Server hostname, e.g. myserver.database.windows.net")
+    database: str = Field(..., description="Database name")
+    username: str = Field(..., description="SQL Server username")
+    password: str = Field(..., description="SQL Server password")
+    port: int = Field(1433, description="Port number")
+
+
+class FabricTargetCredentials(BaseModel):
+    server: str = Field(..., description="Microsoft Fabric SQL Endpoint / Datawarehouse server host")
+    database: str = Field(..., description="Fabric Lakehouse / Warehouse database name")
+    client_id: str | None = Field(None, description="Azure AD Service Principal Client ID")
+    client_secret: str | None = Field(None, description="Azure AD Service Principal Secret")
+    tenant_id: str | None = Field(None, description="Azure AD Tenant ID")
+    username: str | None = Field(None, description="Username if using SQL auth")
+    password: str | None = Field(None, description="Password if using SQL auth")
+    auth_mode: str = Field("service_principal", description="'service_principal' or 'sql_auth'")
+
+
+class ColumnInfo(BaseModel):
+    column_name: str
+    data_type: str
+    is_datetime: bool = False
+
+
+class DiscoveredTable(BaseModel):
+    schema_name: str
+    table_name: str
+    full_name: str
+    columns: list[ColumnInfo] = []
+    datetime_columns: list[str] = []
+    created_column: str | None = None
+    updated_column: str | None = None
+    suggested_load_type: str = "FULL"  # "INCREMENTAL" or "FULL"
+    incremental_type: str = "FULL"     # "BOTH", "UPDATED_ONLY", "CREATED_ONLY", "FULL"
+    suggested_watermark_column: str | None = None
+
+
+class DiscoveredTablesResponse(BaseModel):
+    success: bool
+    message: str
+    tables: list[DiscoveredTable] = []
+
+
+class ConnectionTestResponse(BaseModel):
+    success: bool
+    message: str
+    details: dict | None = None
+
+
+class TableJobConfig(BaseModel):
+    id: str | None = None
+    source_schema: str = "dbo"
+    source_table: str
+    target_schema: str = "dbo"
+    target_table: str
+    load_type: str = "FULL"            # "INCREMENTAL" or "FULL"
+    incremental_type: str = "FULL"     # "BOTH", "UPDATED_ONLY", "CREATED_ONLY", "FULL"
+    watermark_column: str | None = None
+    created_column: str | None = None
+    updated_column: str | None = None
+    is_enabled: bool = True
+
+
+class ConfigureJobsRequest(BaseModel):
+    source: SourceCredentials
+    target: FabricTargetCredentials
+    jobs: list[TableJobConfig]
+
+
+class TableSyncJobRead(BaseModel):
+    id: str
+    source_schema: str
+    source_table: str
+    target_schema: str
+    target_table: str
+    load_type: str
+    incremental_type: str | None = "FULL"
+    watermark_column: str | None
+    created_column: str | None
+    updated_column: str | None
+    last_watermark_value: str | None
+    is_enabled: bool
+    last_run_status: str | None
+    last_run_at: datetime | None
+    last_run_rows: int
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class JobRunResult(BaseModel):
+    job_id: str
+    table_name: str
+    status: str  # "SUCCESS" or "FAILED"
+    load_type: str
+    incremental_type: str | None = None
+    rows_transferred: int = 0
+    watermark_start: str | None = None
+    watermark_end: str | None = None
+    error_message: str | None = None
+    duration_seconds: float = 0.0
+
+
+class RunJobRequest(BaseModel):
+    source: SourceCredentials | None = None
+    target: FabricTargetCredentials | None = None
+
+
+class RunAllJobsResponse(BaseModel):
+    total_jobs: int
+    successful_jobs: int
+    failed_jobs: int
+    results: list[JobRunResult] = []
+
+
+class SyncJobRunRead(BaseModel):
+    id: str
+    job_id: str
+    source_table: str
+    target_table: str
+    load_type: str
+    incremental_type: str | None = None
+    watermark_column: str | None
+    watermark_start: str | None
+    watermark_end: str | None
+    rows_transferred: int
+    status: str
+    error_message: str | None
+    start_time: datetime
+    end_time: datetime | None
+
+    class Config:
+        from_attributes = True
