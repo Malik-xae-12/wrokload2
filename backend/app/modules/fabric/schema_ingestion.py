@@ -1,4 +1,4 @@
-"""Pydantic schemas for Azure SQL to Fabric ingestion and incremental watermark sync."""
+"""Pydantic schemas for Azure SQL to Fabric ingestion, project management, and incremental watermark sync."""
 
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -15,13 +15,56 @@ class SourceCredentials(BaseModel):
 class FabricTargetCredentials(BaseModel):
     server: str = Field(..., description="Microsoft Fabric SQL Endpoint / Datawarehouse server host")
     database: str = Field(..., description="Fabric Lakehouse / Warehouse database name")
-    client_id: str | None = Field(None, description="Azure AD Service Principal Client ID")
-    client_secret: str | None = Field(None, description="Azure AD Service Principal Secret")
-    tenant_id: str | None = Field(None, description="Azure AD Tenant ID")
+    access_token: str | None = Field(None, description="Fabric user bearer token from logged-in session")
+    client_id: str | None = Field(None, description="Azure AD Service Principal Client ID (legacy)")
+    client_secret: str | None = Field(None, description="Azure AD Service Principal Secret (legacy)")
+    tenant_id: str | None = Field(None, description="Azure AD Tenant ID (legacy)")
     username: str | None = Field(None, description="Username if using SQL auth")
     password: str | None = Field(None, description="Password if using SQL auth")
-    auth_mode: str = Field("service_principal", description="'service_principal' or 'sql_auth'")
+    auth_mode: str = Field("fabric_token", description="'fabric_token', 'service_principal', or 'sql_auth'")
 
+
+# ==============================================================================
+# PROJECT SCHEMAS
+# ==============================================================================
+
+class MigrationProjectCreate(BaseModel):
+    name: str = Field(..., description="Project Name")
+    description: str | None = Field(None, description="Optional Project Description")
+    source_type: str = Field("azure_sql", description="'azure_sql', 'synapse', or 'sql_server'")
+    source_server: str = Field(..., description="Source SQL Host")
+    source_database: str = Field(..., description="Source Database")
+    source_username: str = Field(..., description="Source Username")
+    source_port: int = Field(1433, description="Source Port")
+    target_workspace_id: str | None = Field(None, description="Fabric Workspace ID")
+    target_workspace_name: str = Field("Data_Migration_Workspace", description="Fabric Workspace Name")
+    target_lakehouse_name: str = Field("LH_BRONZE", description="Fabric Lakehouse Name")
+    target_warehouse_name: str = Field("WH_METADATA", description="Fabric Warehouse Name")
+    target_server: str | None = Field(None, description="Fabric SQL Analytics Endpoint")
+    target_database: str = Field("WH_METADATA", description="Target Database")
+    auth_mode: str = Field("fabric_token", description="Auth Mode")
+
+
+class MigrationProjectUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    source_type: str | None = None
+    source_server: str | None = None
+    source_database: str | None = None
+    source_username: str | None = None
+    source_port: int | None = None
+    target_workspace_id: str | None = None
+    target_workspace_name: str | None = None
+    target_lakehouse_name: str | None = None
+    target_warehouse_name: str | None = None
+    target_server: str | None = None
+    target_database: str | None = None
+    auth_mode: str | None = None
+
+
+# ==============================================================================
+# TABLE & JOB SCHEMAS
+# ==============================================================================
 
 class ColumnInfo(BaseModel):
     column_name: str
@@ -56,6 +99,7 @@ class ConnectionTestResponse(BaseModel):
 
 class TableJobConfig(BaseModel):
     id: str | None = None
+    project_id: str | None = None
     source_schema: str = "dbo"
     source_table: str
     target_schema: str = "dbo"
@@ -69,6 +113,7 @@ class TableJobConfig(BaseModel):
 
 
 class ConfigureJobsRequest(BaseModel):
+    project_id: str | None = None
     source: SourceCredentials
     target: FabricTargetCredentials
     jobs: list[TableJobConfig]
@@ -76,6 +121,7 @@ class ConfigureJobsRequest(BaseModel):
 
 class TableSyncJobRead(BaseModel):
     id: str
+    project_id: str | None = None
     source_schema: str
     source_table: str
     target_schema: str
@@ -98,6 +144,38 @@ class TableSyncJobRead(BaseModel):
         from_attributes = True
 
 
+class MigrationProjectRead(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    source_type: str
+    source_server: str
+    source_database: str
+    source_username: str
+    source_port: int
+    target_workspace_id: str | None = None
+    target_workspace_name: str
+    target_lakehouse_name: str
+    target_warehouse_name: str
+    target_server: str | None = None
+    target_database: str
+    auth_mode: str
+    created_at: datetime
+    updated_at: datetime
+
+    # Aggregated metrics
+    table_count: int = 0
+    completed_jobs: int = 0
+    total_jobs: int = 0
+    total_rows: int = 0
+    status: str = "IDLE"  # "SUCCESS", "RUNNING", "FAILED", "IDLE"
+    last_run_at: datetime | None = None
+    jobs: list[TableSyncJobRead] = []
+
+    class Config:
+        from_attributes = True
+
+
 class JobRunResult(BaseModel):
     job_id: str
     table_name: str
@@ -112,6 +190,7 @@ class JobRunResult(BaseModel):
 
 
 class RunJobRequest(BaseModel):
+    project_id: str | None = None
     source: SourceCredentials | None = None
     target: FabricTargetCredentials | None = None
 

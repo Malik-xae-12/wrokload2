@@ -18,7 +18,7 @@ import pyodbc
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.fabric.models.ingestion_models import TableSyncJob, SyncJobRun
+from app.modules.fabric.models.ingestion_models import MigrationProject, TableSyncJob, SyncJobRun
 from app.modules.fabric.schema_ingestion import (
     SourceCredentials,
     FabricTargetCredentials,
@@ -26,6 +26,10 @@ from app.modules.fabric.schema_ingestion import (
     ColumnInfo,
     JobRunResult,
     TableJobConfig,
+    MigrationProjectCreate,
+    MigrationProjectUpdate,
+    MigrationProjectRead,
+    TableSyncJobRead,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,55 +189,131 @@ def _get_azure_sql_access_token(tenant_id: str, client_id: str, client_secret: s
     return struct.pack(f"=i{len(token_bytes)}s", len(token_bytes), token_bytes)
 
 
+def _format_token_for_pyodbc(token: str) -> bytes:
+    """Pack an access token into SQL_COPT_SS_ACCESS_TOKEN binary structure for pyodbc."""
+    token_bytes = token.encode("utf-16-le")
+    return struct.pack(f"=i{len(token_bytes)}s", len(token_bytes), token_bytes)
+
+
+def _exchange_user_token_for_database_token(user_token: str | None) -> bytes | None:
+    """Acquire token for database.windows.net for Fabric SQL Endpoint via OBO or service principal."""
+    import os
+    tenant_id = os.getenv("FABRIC_TENANT_ID", "")
+    client_id = os.getenv("FABRIC_CLIENT_ID", "")
+    client_secret = os.getenv("FABRIC_CLIENT_SECRET", "")
+
+    # 1. Try On-Behalf-Of flow if user_token provided
+    if user_token:
+        try:
+            url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+            payload = {
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "assertion": user_token,
+                "scope": "https://database.windows.net/.default",
+                "requested_token_use": "on_behalf_of",
+            }
+            resp = httpx.post(url, data=payload, timeout=httpx.Timeout(15.0, connect=5.0))
+            if resp.status_code == 200:
+                db_token = resp.json()["access_token"]
+                token_bytes = db_token.encode("utf-16-le")
+                return struct.pack(f"=i{len(token_bytes)}s", len(token_bytes), token_bytes)
+        except Exception:
+            pass
+
+    # 2. Client credentials for database.windows.net
+    try:
+        url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        payload = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": "https://database.windows.net/.default",
+        }
+        resp = httpx.post(url, data=payload, timeout=httpx.Timeout(15.0, connect=5.0))
+        if resp.status_code == 200:
+            db_token = resp.json()["access_token"]
+            token_bytes = db_token.encode("utf-16-le")
+            return struct.pack(f"=i{len(token_bytes)}s", len(token_bytes), token_bytes)
+    except Exception as e:
+        logger.warning(f"Database access token error: {e}")
+
+    return None
+
+
 def get_target_connection(creds: FabricTargetCredentials) -> pyodbc.Connection:
     """Connect to Microsoft Fabric Lakehouse or Warehouse SQL Endpoint."""
+    import os
     driver = _resolve_odbc_driver()
-    server = creds.server.strip()
-    database = creds.database.strip()
+    default_endpoint = os.getenv(
+        "FABRIC_SQL_ENDPOINT",
+        "ptrf35b4be5udprnukus7ggpeq-fd5dtvvoglfe7bzgpupk4nn5cm.datawarehouse.fabric.microsoft.com"
+    ).strip()
 
+<<<<<<< Updated upstream
+    # Resolve server host: if empty or raw GUID format, use the verified active warehouse endpoint
+    server = (creds.server or "").strip()
+    if not server or (server.count("-") == 4 and not server.startswith("ptrf")):
+        server = default_endpoint
+
+    database = (creds.database or "WH_METADATA").strip()
+
+    # 1. Acquire database access token for https://database.windows.net/.default
+    db_token_struct = _exchange_user_token_for_database_token(creds.access_token)
+    if db_token_struct:
+=======
     conn = None
     # If Service Principal credentials are provided, use SQL_COPT_SS_ACCESS_TOKEN
     if (creds.auth_mode == "service_principal" or creds.client_id) and creds.client_id and creds.client_secret:
-        tenant_id = creds.tenant_id or "f45de27c-093c-413b-be2d-a2a92f98cf24"
+        tenant_id = creds.tenant_id or os.getenv("FABRIC_TENANT_ID", "")
+>>>>>>> Stashed changes
         try:
-            token_struct = _get_azure_sql_access_token(tenant_id, creds.client_id, creds.client_secret)
             conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Encrypt=yes;TrustServerCertificate=no;"
             SQL_COPT_SS_ACCESS_TOKEN = 1256
-            conn = pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct}, timeout=30)
+            conn = pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: db_token_struct}, timeout=30)
+            logger.info("Successfully connected to Fabric SQL Endpoint: %s / %s", server, database)
+            try:
+                conn.add_output_converter(-155, _handle_datetimeoffset)
+            except Exception:
+                pass
+            return conn
         except Exception as e:
-            logger.warning(f"Token-based connection attempt failed, trying fallback connection string: {e}")
+            logger.warning(f"Database token connection to {server} note: {e}")
+            if server != default_endpoint:
+                try:
+                    conn_str = f"DRIVER={{{driver}}};SERVER={default_endpoint};DATABASE={database};Encrypt=yes;TrustServerCertificate=no;"
+                    conn = pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: db_token_struct}, timeout=30)
+                    logger.info("Successfully connected to Fabric SQL fallback endpoint: %s", default_endpoint)
+                    try:
+                        conn.add_output_converter(-155, _handle_datetimeoffset)
+                    except Exception:
+                        pass
+                    return conn
+                except Exception as e2:
+                    logger.warning(f"Fallback endpoint connection failed: {e2}")
+
+    # 2. Fallback SQL Auth
+    if creds.username and creds.password:
+        try:
             conn_str = (
                 f"DRIVER={{{driver}}};"
                 f"SERVER={server};"
                 f"DATABASE={database};"
-                "Authentication=ActiveDirectoryServicePrincipal;"
-                f"UID={creds.client_id};"
-                f"PWD={_escape_odbc_val(creds.client_secret)};"
+                f"UID={_escape_odbc_val(creds.username)};"
+                f"PWD={_escape_odbc_val(creds.password)};"
                 "Encrypt=yes;"
                 "TrustServerCertificate=yes;"
-                "Connection Timeout=30;"
+                "Connection Timeout=25;"
             )
-            conn = pyodbc.connect(conn_str, timeout=30)
-    else:
-        conn_str = (
-            f"DRIVER={{{driver}}};"
-            f"SERVER={server};"
-            f"DATABASE={database};"
-            f"UID={_escape_odbc_val(creds.username)};"
-            f"PWD={_escape_odbc_val(creds.password)};"
-            "Encrypt=yes;"
-            "TrustServerCertificate=yes;"
-            "Connection Timeout=25;"
-        )
-        conn = pyodbc.connect(conn_str, timeout=25)
-
-    if conn:
-        try:
-            conn.add_output_converter(-155, _handle_datetimeoffset)
+            conn = pyodbc.connect(conn_str, timeout=25)
+            try:
+                conn.add_output_converter(-155, _handle_datetimeoffset)
+            except Exception:
+                pass
+            return conn
         except Exception:
             pass
-    return conn
-
 
 def test_azure_sql_connection(creds: SourceCredentials) -> dict:
     """Test Azure SQL connection and return basic server version metadata."""
@@ -383,24 +463,211 @@ def discover_source_tables(creds: SourceCredentials) -> list[DiscoveredTable]:
         conn.close()
 
 
+async def create_project(db: AsyncSession, payload: MigrationProjectCreate) -> MigrationProject:
+    """Create and persist a new migration project entity."""
+    project = MigrationProject(
+        name=payload.name,
+        description=payload.description,
+        source_type=payload.source_type,
+        source_server=payload.source_server,
+        source_database=payload.source_database,
+        source_username=payload.source_username,
+        source_port=payload.source_port,
+        target_workspace_id=payload.target_workspace_id,
+        target_workspace_name=payload.target_workspace_name,
+        target_lakehouse_name=payload.target_lakehouse_name,
+        target_warehouse_name=payload.target_warehouse_name,
+        target_server=payload.target_server,
+        target_database=payload.target_database,
+        auth_mode=payload.auth_mode,
+    )
+    db.add(project)
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+async def list_projects_with_stats(db: AsyncSession) -> list[MigrationProjectRead]:
+    """List all migration projects with aggregated live job and sync metrics."""
+    stmt = select(MigrationProject).order_by(MigrationProject.created_at.desc())
+    result = await db.execute(stmt)
+    projects = list(result.scalars().all())
+
+    read_list: list[MigrationProjectRead] = []
+    for p in projects:
+        jobs_stmt = select(TableSyncJob).where(TableSyncJob.project_id == p.id).order_by(TableSyncJob.created_at.asc())
+        jobs_res = await db.execute(jobs_stmt)
+        p_jobs = list(jobs_res.scalars().all())
+
+        table_count = len(p_jobs)
+        completed_jobs = sum(1 for j in p_jobs if j.last_run_status == "SUCCESS")
+        total_rows = sum(j.last_run_rows or 0 for j in p_jobs)
+
+        if any(j.last_run_status == "RUNNING" for j in p_jobs):
+            agg_status = "RUNNING"
+        elif any(j.last_run_status == "FAILED" for j in p_jobs):
+            agg_status = "FAILED"
+        elif table_count > 0 and completed_jobs == table_count:
+            agg_status = "SUCCESS"
+        else:
+            agg_status = "IDLE"
+
+        run_times = [j.last_run_at for j in p_jobs if j.last_run_at]
+        last_run_at = max(run_times) if run_times else None
+
+        job_reads = [TableSyncJobRead.model_validate(j) for j in p_jobs]
+
+        read_list.append(
+            MigrationProjectRead(
+                id=p.id,
+                name=p.name,
+                description=p.description,
+                source_type=p.source_type,
+                source_server=p.source_server,
+                source_database=p.source_database,
+                source_username=p.source_username,
+                source_port=p.source_port,
+                target_workspace_id=p.target_workspace_id,
+                target_workspace_name=p.target_workspace_name,
+                target_lakehouse_name=p.target_lakehouse_name,
+                target_warehouse_name=p.target_warehouse_name,
+                target_server=p.target_server,
+                target_database=p.target_database,
+                auth_mode=p.auth_mode,
+                created_at=p.created_at,
+                updated_at=p.updated_at,
+                table_count=table_count,
+                completed_jobs=completed_jobs,
+                total_jobs=table_count,
+                total_rows=total_rows,
+                status=agg_status,
+                last_run_at=last_run_at,
+                jobs=job_reads,
+            )
+        )
+    return read_list
+
+
+async def get_project_by_id(db: AsyncSession, project_id: str) -> MigrationProjectRead | None:
+    """Retrieve single project with its source, target, and configured table sync jobs."""
+    stmt = select(MigrationProject).where(MigrationProject.id == project_id)
+    result = await db.execute(stmt)
+    p = result.scalar_one_or_none()
+    if not p:
+        return None
+
+    jobs_stmt = select(TableSyncJob).where(TableSyncJob.project_id == p.id).order_by(TableSyncJob.created_at.asc())
+    jobs_res = await db.execute(jobs_stmt)
+    p_jobs = list(jobs_res.scalars().all())
+
+    table_count = len(p_jobs)
+    completed_jobs = sum(1 for j in p_jobs if j.last_run_status == "SUCCESS")
+    total_rows = sum(j.last_run_rows or 0 for j in p_jobs)
+
+    if any(j.last_run_status == "RUNNING" for j in p_jobs):
+        agg_status = "RUNNING"
+    elif any(j.last_run_status == "FAILED" for j in p_jobs):
+        agg_status = "FAILED"
+    elif table_count > 0 and completed_jobs == table_count:
+        agg_status = "SUCCESS"
+    else:
+        agg_status = "IDLE"
+
+    run_times = [j.last_run_at for j in p_jobs if j.last_run_at]
+    last_run_at = max(run_times) if run_times else None
+    job_reads = [TableSyncJobRead.model_validate(j) for j in p_jobs]
+
+    return MigrationProjectRead(
+        id=p.id,
+        name=p.name,
+        description=p.description,
+        source_type=p.source_type,
+        source_server=p.source_server,
+        source_database=p.source_database,
+        source_username=p.source_username,
+        source_port=p.source_port,
+        target_workspace_id=p.target_workspace_id,
+        target_workspace_name=p.target_workspace_name,
+        target_lakehouse_name=p.target_lakehouse_name,
+        target_warehouse_name=p.target_warehouse_name,
+        target_server=p.target_server,
+        target_database=p.target_database,
+        auth_mode=p.auth_mode,
+        created_at=p.created_at,
+        updated_at=p.updated_at,
+        table_count=table_count,
+        completed_jobs=completed_jobs,
+        total_jobs=table_count,
+        total_rows=total_rows,
+        status=agg_status,
+        last_run_at=last_run_at,
+        jobs=job_reads,
+    )
+
+
+async def update_project_by_id(
+    db: AsyncSession,
+    project_id: str,
+    payload: MigrationProjectUpdate,
+) -> MigrationProject | None:
+    """Update project configuration parameters."""
+    stmt = select(MigrationProject).where(MigrationProject.id == project_id)
+    result = await db.execute(stmt)
+    project = result.scalar_one_or_none()
+    if not project:
+        return None
+
+    for field, val in payload.model_dump(exclude_unset=True).items():
+        if val is not None:
+            setattr(project, field, val)
+    project.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+async def delete_project_by_id(db: AsyncSession, project_id: str) -> bool:
+    """Delete a migration project and cascade delete all its jobs."""
+    stmt = select(MigrationProject).where(MigrationProject.id == project_id)
+    result = await db.execute(stmt)
+    project = result.scalar_one_or_none()
+    if not project:
+        return False
+    await db.delete(project)
+    await db.commit()
+    return True
+
+
 async def save_or_update_jobs(
     db: AsyncSession,
     jobs_payload: list[TableJobConfig],
+    project_id: str | None = None,
 ) -> list[TableSyncJob]:
     """Persist selected table ingestion job configurations into metadata store."""
     saved_jobs: list[TableSyncJob] = []
 
     for item in jobs_payload:
-        stmt = select(TableSyncJob).where(
-            TableSyncJob.source_schema == item.source_schema,
-            TableSyncJob.source_table == item.source_table,
-        )
+        pid = item.project_id or project_id
+
+        if pid:
+            stmt = select(TableSyncJob).where(
+                TableSyncJob.project_id == pid,
+                TableSyncJob.source_schema == item.source_schema,
+                TableSyncJob.source_table == item.source_table,
+            )
+        else:
+            stmt = select(TableSyncJob).where(
+                TableSyncJob.source_schema == item.source_schema,
+                TableSyncJob.source_table == item.source_table,
+            )
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
 
         inc_type = item.incremental_type or ("INCREMENTAL" if item.load_type.upper() == "INCREMENTAL" else "FULL")
 
         if existing:
+            if pid:
+                existing.project_id = pid
             existing.target_schema = item.target_schema or "dbo"
             existing.target_table = item.target_table or item.source_table
             existing.load_type = item.load_type.upper()
@@ -413,6 +680,7 @@ async def save_or_update_jobs(
             saved_jobs.append(existing)
         else:
             new_job = TableSyncJob(
+                project_id=pid,
                 source_schema=item.source_schema,
                 source_table=item.source_table,
                 target_schema=item.target_schema or "dbo",
@@ -434,9 +702,12 @@ async def save_or_update_jobs(
     return saved_jobs
 
 
-async def get_all_jobs(db: AsyncSession) -> list[TableSyncJob]:
-    """Retrieve all configured table sync jobs."""
-    stmt = select(TableSyncJob).order_by(TableSyncJob.created_at.desc())
+async def get_all_jobs(db: AsyncSession, project_id: str | None = None) -> list[TableSyncJob]:
+    """Retrieve all configured table sync jobs, optionally scoped to a project."""
+    if project_id:
+        stmt = select(TableSyncJob).where(TableSyncJob.project_id == project_id).order_by(TableSyncJob.created_at.asc())
+    else:
+        stmt = select(TableSyncJob).order_by(TableSyncJob.created_at.desc())
     result = await db.execute(stmt)
     return list(result.scalars().all())
 

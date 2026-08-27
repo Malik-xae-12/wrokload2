@@ -2,14 +2,47 @@
 
 from datetime import datetime
 import uuid
-from sqlalchemy import Column, String, Boolean, DateTime, Integer, Text
+from sqlalchemy import Column, String, Boolean, DateTime, Integer, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from app.db.base import Base
+
+
+class MigrationProject(Base):
+    __tablename__ = "migration_projects"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(256), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Source parameters
+    source_type = Column(String(64), nullable=False, default="azure_sql")  # "azure_sql", "synapse", "sql_server"
+    source_server = Column(String(256), nullable=False)
+    source_database = Column(String(256), nullable=False)
+    source_username = Column(String(256), nullable=False)
+    source_port = Column(Integer, default=1433, nullable=False)
+
+    # Target Fabric parameters
+    target_workspace_id = Column(String(128), nullable=True)
+    target_workspace_name = Column(String(256), nullable=False, default="Data_Migration_Workspace")
+    target_lakehouse_name = Column(String(256), nullable=False, default="LH_BRONZE")
+    target_warehouse_name = Column(String(256), nullable=False, default="WH_METADATA")
+    target_server = Column(String(512), nullable=True)
+    target_database = Column(String(256), nullable=False, default="WH_METADATA")
+    auth_mode = Column(String(32), nullable=False, default="fabric_token")
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationship to jobs
+    jobs = relationship("TableSyncJob", back_populates="project", cascade="all, delete-orphan")
 
 
 class TableSyncJob(Base):
     __tablename__ = "table_sync_jobs"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = Column(String(36), ForeignKey("migration_projects.id", ondelete="CASCADE"), nullable=True, index=True)
+
     source_schema = Column(String(128), nullable=False, default="dbo")
     source_table = Column(String(128), nullable=False)
     target_schema = Column(String(128), nullable=False, default="dbo")
@@ -38,6 +71,9 @@ class TableSyncJob(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    project = relationship("MigrationProject", back_populates="jobs")
 
 
 class SyncJobRun(Base):

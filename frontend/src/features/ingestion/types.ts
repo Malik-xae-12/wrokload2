@@ -1,7 +1,5 @@
 export interface ProvisionWorkspaceRequest {
-  tenant_id: string;
-  client_id: string;
-  client_secret: string;
+  access_token: string;
   workspace_name: string;
   capacity_id?: string;
   lakehouse_name: string;
@@ -34,12 +32,76 @@ export interface SourceCredentials {
 export interface FabricTargetCredentials {
   server: string;
   database: string;
+  access_token?: string;
   client_id?: string;
   client_secret?: string;
   tenant_id?: string;
   username?: string;
   password?: string;
-  auth_mode: 'service_principal' | 'sql_auth';
+  auth_mode: 'fabric_token' | 'service_principal' | 'sql_auth';
+}
+
+export interface MigrationProjectCreate {
+  name: string;
+  description?: string;
+  source_type: 'azure_sql' | 'synapse' | 'sql_server';
+  source_server: string;
+  source_database: string;
+  source_username: string;
+  source_port: number;
+  target_workspace_id?: string;
+  target_workspace_name: string;
+  target_lakehouse_name: string;
+  target_warehouse_name: string;
+  target_server?: string;
+  target_database: string;
+  auth_mode: string;
+}
+
+export interface MigrationProjectUpdate {
+  name?: string;
+  description?: string;
+  source_type?: 'azure_sql' | 'synapse' | 'sql_server';
+  source_server?: string;
+  source_database?: string;
+  source_username?: string;
+  source_port?: number;
+  target_workspace_id?: string;
+  target_workspace_name?: string;
+  target_lakehouse_name?: string;
+  target_warehouse_name?: string;
+  target_server?: string;
+  target_database?: string;
+  auth_mode?: string;
+}
+
+export interface MigrationProjectRead {
+  id: string;
+  name: string;
+  description?: string | null;
+  source_type: 'azure_sql' | 'synapse' | 'sql_server';
+  source_server: string;
+  source_database: string;
+  source_username: string;
+  source_port: number;
+  target_workspace_id?: string | null;
+  target_workspace_name: string;
+  target_lakehouse_name: string;
+  target_warehouse_name: string;
+  target_server?: string | null;
+  target_database: string;
+  auth_mode: string;
+  created_at: string;
+  updated_at: string;
+
+  // Live aggregated stats
+  table_count: number;
+  completed_jobs: number;
+  total_jobs: number;
+  total_rows: number;
+  status: 'SUCCESS' | 'RUNNING' | 'FAILED' | 'IDLE';
+  last_run_at: string | null;
+  jobs?: TableSyncJobRead[];
 }
 
 export interface ColumnInfo {
@@ -77,6 +139,7 @@ export interface ConnectionTestResponse {
 
 export interface TableJobConfig {
   id?: string;
+  project_id?: string;
   source_schema: string;
   source_table: string;
   target_schema: string;
@@ -91,6 +154,7 @@ export interface TableJobConfig {
 
 export interface TableSyncJobRead {
   id: string;
+  project_id?: string | null;
   source_schema: string;
   source_table: string;
   target_schema: string;

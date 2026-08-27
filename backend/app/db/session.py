@@ -28,7 +28,7 @@ async_session_maker = async_sessionmaker(
 async def create_db_and_tables() -> None:
     """Ensure all SQLAlchemy tables are registered and created in SQLite."""
     # Import ingestion models to register them on Base.metadata
-    from app.modules.fabric.models.ingestion_models import TableSyncJob, SyncJobRun  # noqa: F401
+    from app.modules.fabric.models.ingestion_models import MigrationProject, TableSyncJob, SyncJobRun  # noqa: F401
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

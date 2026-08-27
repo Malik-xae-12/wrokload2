@@ -11,29 +11,79 @@ export function HelloWorldItemEditor(props: PageProps) {
       if (event.data && event.data.type === "FABRIC_SIGN_IN_REQUEST") {
         console.log("📨 Received FABRIC_SIGN_IN_REQUEST from Accelerator iframe");
         try {
-          // Acquire token silently from Fabric
-          const authResult = await workloadClient.auth.acquireFrontendAccessToken({
-            scopes: ["https://api.fabric.microsoft.com/.default"]
-          });
-          
-          console.log("🔑 Fabric token acquired successfully:", authResult);
-          
-          if (iframeRef.current && iframeRef.current.contentWindow) {
+          let token: string | null = null;
+          const authAny = workloadClient.auth as any;
+
+          // Strategy 1: acquireFrontendAccessToken with Fabric default scope
+          if (!token && typeof authAny?.acquireFrontendAccessToken === "function") {
+            try {
+              const res = await authAny.acquireFrontendAccessToken({
+                scopes: ["https://api.fabric.microsoft.com/.default"]
+              });
+              if (res?.token) {
+                token = res.token;
+                console.log("🔑 Acquired user token via acquireFrontendAccessToken (Fabric scope)");
+              }
+            } catch (e: any) {
+              console.warn("acquireFrontendAccessToken Fabric scope:", e?.message || e);
+            }
+          }
+
+          // Strategy 2: acquireFrontendAccessToken with empty scopes
+          if (!token && typeof authAny?.acquireFrontendAccessToken === "function") {
+            try {
+              const res = await authAny.acquireFrontendAccessToken({ scopes: [] });
+              if (res?.token) {
+                token = res.token;
+                console.log("🔑 Acquired user token via acquireFrontendAccessToken (empty scopes)");
+              }
+            } catch (e: any) {
+              console.warn("acquireFrontendAccessToken empty scopes:", e?.message || e);
+            }
+          }
+
+          // Strategy 3: acquireAccessToken (Workload Audience)
+          if (!token && typeof authAny?.acquireAccessToken === "function") {
+            try {
+              const res = await authAny.acquireAccessToken({});
+              if (res?.token) {
+                token = res.token;
+                console.log("🔑 Acquired user token via acquireAccessToken");
+              }
+            } catch (e: any) {
+              console.warn("acquireAccessToken:", e?.message || e);
+            }
+          }
+
+          // Strategy 4: getAccessToken (Direct AAD user session token)
+          if (!token && typeof authAny?.getAccessToken === "function") {
+            try {
+              const res = await authAny.getAccessToken();
+              if (res?.token) {
+                token = res.token;
+                console.log("🔑 Acquired user token via getAccessToken");
+              }
+            } catch (e: any) {
+              console.warn("getAccessToken:", e?.message || e);
+            }
+          }
+
+          if (token && iframeRef.current?.contentWindow) {
             iframeRef.current.contentWindow.postMessage(
-              {
-                type: "FABRIC_SIGN_IN_RESPONSE",
-                token: authResult.token
-              },
+              { type: "FABRIC_SIGN_IN_RESPONSE", token },
               "*"
             );
+            console.log("✅ User token sent to Accelerator iframe successfully");
+          } else {
+            throw new Error("Unable to extract user token from Fabric session. Backend will handle authentication.");
           }
         } catch (error: any) {
-          console.error("❌ Failed to acquire Fabric token:", error);
-          if (iframeRef.current && iframeRef.current.contentWindow) {
+          console.error("❌ Fabric token acquisition note:", error);
+          if (iframeRef.current?.contentWindow) {
             iframeRef.current.contentWindow.postMessage(
               {
                 type: "FABRIC_SIGN_IN_ERROR",
-                error: error.message || "Failed to acquire Fabric token"
+                error: error?.message || "Token not available from Fabric session"
               },
               "*"
             );
@@ -47,7 +97,7 @@ export function HelloWorldItemEditor(props: PageProps) {
   }, [workloadClient]);
 
   return (
-    <div style={{ width: '100%', height: 'calc(100vh - 40px)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ width: '100%', height: 'calc(100vh - 40px)', minHeight: '800px', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <iframe
         ref={iframeRef}
         src="http://localhost:5173/"
@@ -56,8 +106,10 @@ export function HelloWorldItemEditor(props: PageProps) {
         style={{
           width: '100%',
           height: '100%',
+          minHeight: '800px',
           border: 'none',
-          flex: 1
+          flex: 1,
+          display: 'block',
         }}
       />
     </div>

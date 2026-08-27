@@ -1,7 +1,7 @@
-"""API router for Azure SQL to Microsoft Fabric direct ingestion and sync jobs."""
+"""API router for Azure SQL to Microsoft Fabric direct ingestion, project management, and sync jobs."""
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
@@ -16,6 +16,9 @@ from app.modules.fabric.schema_ingestion import (
     RunJobRequest,
     RunAllJobsResponse,
     SyncJobRunRead,
+    MigrationProjectCreate,
+    MigrationProjectUpdate,
+    MigrationProjectRead,
 )
 from app.modules.fabric.services import ingestion_service as svc
 from app.modules.fabric.services.fabric_provisioner import (
@@ -28,10 +31,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/fabric/ingestion", tags=["ingestion"])
 
 
+# ==============================================================================
+# PROVISIONING & CONNECTION ENDPOINTS
+# ==============================================================================
+
 @router.post("/provision-workspace", response_model=ProvisionWorkspaceResponse)
 def provision_workspace_endpoint(req: ProvisionWorkspaceRequest):
     """Automatically provision Microsoft Fabric Workspace, Lakehouse, and Metadata Warehouse
-    using Azure AD Service Principal credentials.
+    using the logged-in Fabric user's access token.
     """
     res = auto_provision_fabric_environment(req)
     if not res.success:
@@ -85,14 +92,97 @@ def discover_tables(creds: SourceCredentials):
         )
 
 
+# ==============================================================================
+# PROJECT CRUD ENDPOINTS
+# ==============================================================================
+
+@router.post("/projects", response_model=MigrationProjectRead, status_code=status.HTTP_201_CREATED)
+async def create_project_endpoint(
+    payload: MigrationProjectCreate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Create a new data migration project with source & destination metadata."""
+    try:
+        project = await svc.create_project(db, payload)
+        project_read = await svc.get_project_by_id(db, project.id)
+        return project_read
+    except Exception as e:
+        logger.exception("Error creating project")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create project: {str(e)}",
+        )
+
+
+@router.get("/projects", response_model=list[MigrationProjectRead])
+async def list_projects_endpoint(
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List all migration projects with their live table counts and sync statuses."""
+    projects = await svc.list_projects_with_stats(db)
+    return projects
+
+
+@router.get("/projects/{project_id}", response_model=MigrationProjectRead)
+async def get_project_endpoint(
+    project_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Retrieve a single project by ID including its source, destination, and configured jobs."""
+    project = await svc.get_project_by_id(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return project
+
+
+@router.put("/projects/{project_id}", response_model=MigrationProjectRead)
+async def update_project_endpoint(
+    project_id: str,
+    payload: MigrationProjectUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Update project metadata, source, or target configuration."""
+    project = await svc.update_project_by_id(db, project_id, payload)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    project_read = await svc.get_project_by_id(db, project_id)
+    return project_read
+
+
+@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project_endpoint(
+    project_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Delete a migration project and cascade delete all its configured sync jobs."""
+    deleted = await svc.delete_project_by_id(db, project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return None
+
+
+@router.get("/projects/{project_id}/jobs", response_model=list[TableSyncJobRead])
+async def list_project_jobs_endpoint(
+    project_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List all sync jobs configured specifically for this project."""
+    jobs = await svc.get_all_jobs(db, project_id=project_id)
+    return jobs
+
+
+# ==============================================================================
+# JOB CONFIGURATION & EXECUTION ENDPOINTS
+# ==============================================================================
+
 @router.post("/jobs/configure", response_model=list[TableSyncJobRead])
 async def configure_jobs(
     payload: ConfigureJobsRequest,
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Save or update selected table sync job configurations."""
+    """Save or update selected table sync job configurations (optionally scoped to a project)."""
     try:
-        jobs = await svc.save_or_update_jobs(db, payload.jobs)
+        jobs = await svc.save_or_update_jobs(db, payload.jobs, project_id=payload.project_id)
         return jobs
     except Exception as e:
         logger.exception("Error configuring jobs")
@@ -103,9 +193,12 @@ async def configure_jobs(
 
 
 @router.get("/jobs", response_model=list[TableSyncJobRead])
-async def list_jobs(db: AsyncSession = Depends(get_async_session)):
-    """List all configured table ingestion jobs and their current watermark states."""
-    jobs = await svc.get_all_jobs(db)
+async def list_jobs(
+    project_id: str | None = Query(None, description="Optional project ID filter"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List configured table ingestion jobs and their current watermark states."""
+    jobs = await svc.get_all_jobs(db, project_id=project_id)
     return jobs
 
 
@@ -121,21 +214,19 @@ async def delete_job(
     return None
 
 
-
-
 @router.post("/jobs/run-all", response_model=RunAllJobsResponse)
 async def run_all_jobs(
     payload: RunJobRequest,
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Trigger execution of all enabled table ingestion jobs sequentially."""
+    """Trigger execution of all enabled table ingestion jobs sequentially (optionally for a project)."""
     if not payload.source or not payload.target:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Source and Target credentials must be supplied to execute jobs.",
         )
 
-    all_jobs = await svc.get_all_jobs(db)
+    all_jobs = await svc.get_all_jobs(db, project_id=payload.project_id)
     enabled_jobs = [j for j in all_jobs if j.is_enabled]
 
     results: list[JobRunResult] = []
@@ -168,6 +259,22 @@ async def run_all_jobs(
         failed_jobs=fail_count,
         results=results,
     )
+
+
+@router.post("/jobs/{job_id}/run", response_model=JobRunResult)
+async def run_single_job(
+    job_id: str,
+    payload: RunJobRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Execute a single table sync job immediately."""
+    if not payload.source or not payload.target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Source and Target credentials must be supplied.",
+        )
+    res = await svc.execute_job_and_record(job_id, payload.source, payload.target, db)
+    return res
 
 
 @router.get("/jobs/{job_id}/history", response_model=list[SyncJobRunRead])
@@ -203,12 +310,16 @@ async def reset_job_watermark(
 
 @router.post("/jobs/reset-all-watermarks", response_model=list[TableSyncJobRead])
 async def reset_all_watermarks(
+    project_id: str | None = Query(None, description="Optional project ID filter"),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Reset high watermarks for all configured jobs to force full initial re-sync."""
+    """Reset high watermarks for configured jobs to force full initial re-sync."""
     from sqlalchemy import select
     from app.modules.fabric.models.ingestion_models import TableSyncJob
-    stmt = select(TableSyncJob)
+    if project_id:
+        stmt = select(TableSyncJob).where(TableSyncJob.project_id == project_id)
+    else:
+        stmt = select(TableSyncJob)
     res = await db.execute(stmt)
     jobs = list(res.scalars().all())
     for job in jobs:
@@ -219,4 +330,3 @@ async def reset_all_watermarks(
     for job in jobs:
         await db.refresh(job)
     return jobs
-
