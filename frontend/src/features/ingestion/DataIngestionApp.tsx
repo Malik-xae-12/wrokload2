@@ -82,7 +82,7 @@ export const DataIngestionApp: React.FC = () => {
   // Service Principal & Auto-Provisioning State (Dynamically loaded from .env)
   const [provisionReq, setProvisionReq] = useState<ProvisionWorkspaceRequest>({
     tenant_id: import.meta.env.VITE_DEFAULT_TENANT_ID || '008502d6-3f79-46f0-ab37-9354e3fe80ff',
-    client_id: import.meta.env.VITE_DEFAULT_CLIENT_ID || '25ad11d7-5885-4f0e-8424-919bf02e04eb',
+    client_id: import.meta.env.VITE_DEFAULT_CLIENT_ID || '8ac1c727-56e8-4128-9e6f-15943334bf70',
     client_secret: import.meta.env.VITE_DEFAULT_CLIENT_SECRET || 'SWE8Q~EtZhXJAxLm_mVlLFBSI~It5ljFjID~kbvn',
     workspace_name: import.meta.env.VITE_DEFAULT_WORKSPACE_NAME || 'Data_Migration_Workspace',
     capacity_id: import.meta.env.VITE_DEFAULT_CAPACITY_ID || 'F17A64BA-8BA2-4933-9010-00CA3441CC0B',
