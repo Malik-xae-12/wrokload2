@@ -1030,16 +1030,18 @@ async def list_projects_with_stats(db: AsyncSession) -> list[MigrationProjectRea
 
         table_count = len(jobs)
         total_jobs = table_count
-        completed_jobs = len([j for j in jobs if j.last_run_status == "SUCCESS"])
+        completed_jobs = len([j for j in jobs if (j.last_run_status or "").upper() == "SUCCESS"])
         total_rows = sum((j.last_run_rows or 0) for j in jobs)
 
         status_str = "IDLE"
-        if any(j.last_run_status == "RUNNING" for j in jobs):
+        if any((j.last_run_status or "").upper() == "RUNNING" for j in jobs):
             status_str = "RUNNING"
-        elif any(j.last_run_status == "FAILED" for j in jobs):
+        elif any((j.last_run_status or "").upper() == "FAILED" for j in jobs):
             status_str = "FAILED"
         elif completed_jobs > 0 and completed_jobs == total_jobs:
             status_str = "SUCCESS"
+        elif completed_jobs > 0:
+            status_str = "PARTIAL"
 
         last_run_at = None
         run_dates = [j.last_run_at for j in jobs if j.last_run_at]
@@ -1091,16 +1093,18 @@ async def get_project_by_id(db: AsyncSession, project_id: str) -> MigrationProje
 
     table_count = len(jobs)
     total_jobs = table_count
-    completed_jobs = len([j for j in jobs if j.last_run_status == "SUCCESS"])
+    completed_jobs = len([j for j in jobs if (j.last_run_status or "").upper() == "SUCCESS"])
     total_rows = sum((j.last_run_rows or 0) for j in jobs)
 
     status_str = "IDLE"
-    if any(j.last_run_status == "RUNNING" for j in jobs):
+    if any((j.last_run_status or "").upper() == "RUNNING" for j in jobs):
         status_str = "RUNNING"
-    elif any(j.last_run_status == "FAILED" for j in jobs):
+    elif any((j.last_run_status or "").upper() == "FAILED" for j in jobs):
         status_str = "FAILED"
     elif completed_jobs > 0 and completed_jobs == total_jobs:
         status_str = "SUCCESS"
+    elif completed_jobs > 0:
+        status_str = "PARTIAL"
 
     last_run_at = None
     run_dates = [j.last_run_at for j in jobs if j.last_run_at]
