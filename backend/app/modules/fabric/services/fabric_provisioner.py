@@ -244,6 +244,18 @@ def create_fabric_item(
     if resp.status_code in (200, 201):
         return resp.json()
 
+    # Fallback: If enableSchemas is not supported on the tenant/capacity, create standard Lakehouse without creationPayload
+    if resp.status_code == 403 and "creationPayload" in payload:
+        logger.warning(f"Schema-enabled Lakehouse not supported, creating standard Lakehouse '{display_name}'...")
+        payload_no_schema = {
+            "displayName": display_name,
+            "type": formatted_type,
+            "description": description,
+        }
+        resp = httpx.post(url, headers=headers, json=payload_no_schema, timeout=_TIMEOUT)
+        if resp.status_code in (200, 201):
+            return resp.json()
+
     if resp.status_code == 202:
         for _ in range(8):
             time.sleep(0.5)

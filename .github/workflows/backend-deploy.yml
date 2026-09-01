@@ -63,4 +63,5 @@ jobs:
         with:
           app-name: fabric-accelerator-api
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_API }}
+          package: backend
           package: .
