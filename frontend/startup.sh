@@ -1,2 +1,2 @@
 #!/bin/bash
-pm2 serve /home/site/wwwroot --no-daemon --spa
+node /home/site/wwwroot/server.js

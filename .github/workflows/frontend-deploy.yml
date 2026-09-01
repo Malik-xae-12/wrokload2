@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - 'frontend/**'
-      - '.github/workflows/frontend-deploy.yml'
   workflow_dispatch:
 
 jobs:
@@ -22,7 +21,7 @@ jobs:
         with:
           node-version: '22.x'
 
-      - name: Install & Build Frontend
+      - name: Install & Build
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: |
@@ -30,6 +29,10 @@ jobs:
           npm install --no-audit --no-fund
           npm run build
           cp startup.sh dist/startup.sh
+          cp server.js dist/server.js
+          cp package.json dist/package.json
+          cd dist
+          npm install express --omit=dev --no-audit --no-fund
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
