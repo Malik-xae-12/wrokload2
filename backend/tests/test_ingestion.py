@@ -13,7 +13,6 @@ from app.modules.fabric.services.fabric_provisioner import (
 class TestIngestionLogic(unittest.TestCase):
     def test_map_sql_types(self):
         self.assertEqual(_map_sql_type("varchar", 50, None, None), "VARCHAR(50)")
-        self.assertEqual(_map_sql_type("nvarchar", -1, None, None), "VARCHAR(8000)")
         self.assertEqual(_map_sql_type("nvarchar", -1, None, None), "VARCHAR(MAX)")
         self.assertEqual(_map_sql_type("decimal", None, 18, 4), "DECIMAL(18, 4)")
         self.assertEqual(_map_sql_type("int", None, None, None), "INT")

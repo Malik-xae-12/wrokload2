@@ -197,32 +197,65 @@ def create_fabric_item(
 
 
 def get_sql_analytics_endpoint(token: str, workspace_id: str, lakehouse_id: str | None = None, warehouse_id: str | None = None) -> str | None:
-    """Retrieve SQL Analytics connection string for Lakehouse or Warehouse."""
+    """Retrieve SQL Analytics connection string for Lakehouse or Warehouse with polling."""
     headers = {"Authorization": f"Bearer {token}"}
-    if warehouse_id:
+    
+    # Retry up to 10 times with 1s pause while Fabric finishes provisioning the SQL Endpoint
+    for attempt in range(10):
+        if warehouse_id:
+            try:
+                url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/warehouses/{warehouse_id}"
+                resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                if resp.status_code == 200:
+                    props = resp.json().get("properties") or {}
+                    conn_str = props.get("connectionInfo") or props.get("connectionString")
+                    if conn_str and not conn_str.startswith(workspace_id):
+                        return conn_str
+            except Exception:
+                pass
+
+        if lakehouse_id:
+            try:
+                url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/lakehouses/{lakehouse_id}"
+                resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                if resp.status_code == 200:
+                    props = resp.json().get("properties") or {}
+                    conn_str = props.get("sqlEndpointProperties", {}).get("connectionString") or props.get("connectionInfo")
+                    if conn_str and not conn_str.startswith(workspace_id):
+                        return conn_str
+            except Exception:
+                pass
+
+        # Try searching all workspace items
         try:
-            url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/warehouses/{warehouse_id}"
-            resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
-            if resp.status_code == 200:
-                props = resp.json().get("properties", {})
-                conn_str = props.get("connectionInfo") or props.get("connectionString")
-                if conn_str:
-                    return conn_str
+            items_url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/items"
+            items_resp = httpx.get(items_url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+            if items_resp.status_code == 200:
+                for itm in items_resp.json().get("value", []):
+                    itype = (itm.get("type") or "").lower()
+                    iid = itm.get("id")
+                    if itype == "warehouse":
+                        det = httpx.get(f"{FABRIC_API_BASE}/workspaces/{workspace_id}/warehouses/{iid}", headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                        if det.status_code == 200:
+                            props = det.json().get("properties") or {}
+                            conn_str = props.get("connectionInfo") or props.get("connectionString")
+                            if conn_str:
+                                return conn_str
+                    elif itype == "lakehouse":
+                        det = httpx.get(f"{FABRIC_API_BASE}/workspaces/{workspace_id}/lakehouses/{iid}", headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                        if det.status_code == 200:
+                            props = det.json().get("properties") or {}
+                            conn_str = props.get("sqlEndpointProperties", {}).get("connectionString") or props.get("connectionInfo")
+                            if conn_str:
+                                return conn_str
         except Exception:
             pass
 
-    if lakehouse_id:
-        try:
-            url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/lakehouses/{lakehouse_id}"
-            resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
-            if resp.status_code == 200:
-                props = resp.json().get("properties", {})
-                conn_str = props.get("sqlEndpointProperties", {}).get("connectionString") or props.get("connectionInfo")
-                if conn_str:
-                    return conn_str
-        except Exception:
-            pass
+        if attempt < 9:
+            time.sleep(1.0)
+
     return None
+
 
 
 def auto_provision_fabric_environment(req: ProvisionWorkspaceRequest) -> ProvisionWorkspaceResponse:

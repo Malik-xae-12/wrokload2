@@ -185,11 +185,70 @@ def _get_azure_sql_access_token(tenant_id: str, client_id: str, client_secret: s
     return struct.pack(f"=i{len(token_bytes)}s", len(token_bytes), token_bytes)
 
 
+def _resolve_fabric_sql_server(server: str, tenant_id: str, client_id: str, client_secret: str, database: str = "WH_METADATA") -> str:
+    """If server is a workspace GUID or placeholder, resolve the true Fabric connectionString via Fabric REST API."""
+    clean_server = (server or "").strip()
+    # If already a valid long hash connection string (e.g. 2ybik...-tbb3...datawarehouse.fabric.microsoft.com)
+    if clean_server and not any(clean_server.startswith(x) for x in ["http://", "https://"]) and "-" in clean_server:
+        parts = clean_server.split(".")[0]
+        if len(parts) > 40 and "-" in parts and len(parts.split("-")[0]) > 20:
+            return clean_server
+
+    ws_guid = clean_server.split(".")[0] if "." in clean_server else clean_server
+    if not (tenant_id and client_id and client_secret):
+        return clean_server
+
+    try:
+        token_resp = httpx.post(
+            f"https://login.microsoftonline.com/{tenant_id.strip()}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id.strip(),
+                "client_secret": client_secret.strip(),
+                "scope": "https://api.fabric.microsoft.com/.default",
+            },
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+        if token_resp.status_code == 200:
+            token = token_resp.json().get("access_token")
+            headers = {"Authorization": f"Bearer {token}"}
+
+            if len(ws_guid) == 36:
+                items_resp = httpx.get(f"https://api.fabric.microsoft.com/v1/workspaces/{ws_guid}/items", headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                if items_resp.status_code == 200:
+                    for itm in items_resp.json().get("value", []):
+                        itype = (itm.get("type") or "").lower()
+                        iid = itm.get("id")
+                        if itype == "warehouse":
+                            det = httpx.get(f"https://api.fabric.microsoft.com/v1/workspaces/{ws_guid}/warehouses/{iid}", headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                            if det.status_code == 200:
+                                conn_str = (det.json().get("properties") or {}).get("connectionInfo") or (det.json().get("properties") or {}).get("connectionString")
+                                if conn_str:
+                                    return conn_str
+                        elif itype == "lakehouse":
+                            det = httpx.get(f"https://api.fabric.microsoft.com/v1/workspaces/{ws_guid}/lakehouses/{iid}", headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+                            if det.status_code == 200:
+                                conn_str = (det.json().get("properties") or {}).get("sqlEndpointProperties", {}).get("connectionString")
+                                if conn_str:
+                                    return conn_str
+    except Exception as e:
+        logger.warning(f"Error auto-resolving Fabric SQL Server endpoint: {e}")
+
+    return clean_server
+
+
 def get_target_connection(creds: FabricTargetCredentials) -> pyodbc.Connection:
     """Connect to Microsoft Fabric Lakehouse or Warehouse SQL Endpoint."""
     driver = _resolve_odbc_driver()
-    server = (creds.server or "").strip()
     database = (creds.database or "WH_METADATA").strip()
+    tenant_id = creds.tenant_id or os.getenv("FABRIC_TENANT_ID", "")
+    server = (creds.server or "").strip()
+
+    # Automatically resolve true Fabric SQL Endpoint if placeholder or workspace ID passed
+    if creds.client_id and creds.client_secret:
+        resolved_server = _resolve_fabric_sql_server(server, tenant_id, creds.client_id, creds.client_secret, database)
+        if resolved_server:
+            server = resolved_server
 
     conn = None
 
@@ -210,7 +269,6 @@ def get_target_connection(creds: FabricTargetCredentials) -> pyodbc.Connection:
 
     # 2. Service Principal with Client ID and Client Secret
     if (creds.auth_mode == "service_principal" or creds.client_id) and creds.client_id and creds.client_secret and server:
-        tenant_id = creds.tenant_id or os.getenv("FABRIC_TENANT_ID", "")
         try:
             token_struct = _get_azure_sql_access_token(tenant_id, creds.client_id, creds.client_secret)
             conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Encrypt=yes;TrustServerCertificate=no;"
