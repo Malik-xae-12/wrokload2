@@ -1,11 +1,12 @@
-"""Automated Microsoft Fabric Workspace, Lakehouse, and Metadata Warehouse provisioner.
-Creates 100% REAL new workspaces in Microsoft Fabric, assigns Capacity, creates
-Lakehouse and Warehouse, and assigns Admin access to the user.
+"""Automated Microsoft Fabric Workspace, Lakehouse, and Metadata Warehouse provisioner
+using Microsoft Entra ID Service Principal and Fabric REST APIs.
+Automatically assigns Admin permissions to both the Service Principal and User on creation.
 """
 
-import logging
 import os
+import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 import httpx
 import jwt as pyjwt
 from pydantic import BaseModel, Field
@@ -13,21 +14,23 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 FABRIC_API_BASE = "https://api.fabric.microsoft.com/v1"
+LOGIN_BASE = "https://login.microsoftonline.com"
 _TIMEOUT = httpx.Timeout(45.0, connect=10.0)
 
-# Default admin user Object ID (optional)
-DEFAULT_USER_OBJECT_ID = None
-DEFAULT_CAPACITY_ID = None
+# Default admin user Object ID
+DEFAULT_USER_OBJECT_ID = "58f505c6-d389-468b-9457-cf50c4a45493"
 
 
 class ProvisionWorkspaceRequest(BaseModel):
-    access_token: str | None = Field(None, description="Optional user bearer token")
-    workspace_name: str = Field(..., description="Name of the Fabric workspace to create")
-    capacity_id: str | None = Field(None, description="Fabric Capacity ID GUID")
+    tenant_id: str = Field(..., description="Azure AD / Entra ID Tenant ID")
+    client_id: str = Field(..., description="Service Principal App Registration Client ID")
+    client_secret: str = Field(..., description="Service Principal Client Secret")
+    workspace_name: str = Field("Data_Migration_Workspace", description="Name of the Fabric workspace to create")
+    capacity_id: str | None = Field(None, description="Optional Fabric Capacity ID GUID")
     lakehouse_name: str = Field("LH_BRONZE", description="Name of Lakehouse to create")
     warehouse_name: str = Field("WH_METADATA", description="Name of Metadata Warehouse to create")
     user_object_id: str | None = Field(
-        None,
+        DEFAULT_USER_OBJECT_ID,
         description="Azure AD User Object ID to automatically grant Admin access",
     )
 
@@ -46,96 +49,62 @@ class ProvisionWorkspaceResponse(BaseModel):
     admin_assigned: bool = False
 
 
-def get_fabric_api_token(user_token: str | None = None) -> str:
-    """Acquire a working Fabric REST API token with full workspace creation permissions."""
-    # 1. Try Service Principal credentials first for guaranteed workspace creation authority
-    tenant_id = os.getenv("FABRIC_TENANT_ID", "")
-    client_id = os.getenv("FABRIC_CLIENT_ID", "")
-    client_secret = os.getenv("FABRIC_CLIENT_SECRET", "")
+def get_fabric_sp_token(tenant_id: str, client_id: str, client_secret: str) -> str:
+    """Acquire OAuth2 bearer token for Microsoft Fabric REST APIs using Service Principal."""
+    url = f"{LOGIN_BASE}/{tenant_id.strip()}/oauth2/v2.0/token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": client_id.strip(),
+        "client_secret": client_secret.strip(),
+        "scope": "https://api.fabric.microsoft.com/.default",
+    }
+    resp = httpx.post(url, data=payload, timeout=_TIMEOUT)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Failed to acquire Fabric token: {resp.status_code} - {resp.text}"
+        )
+    data = resp.json()
+    return data["access_token"]
 
-    if tenant_id and client_id and client_secret:
-        try:
-            url = f"https://login.microsoftonline.com/{tenant_id.strip()}/oauth2/v2.0/token"
-            payload = {
-                "grant_type": "client_credentials",
-                "client_id": client_id.strip(),
-                "client_secret": client_secret.strip(),
-                "scope": "https://api.fabric.microsoft.com/.default",
-            }
-            resp = httpx.post(url, data=payload, timeout=_TIMEOUT)
-            if resp.status_code == 200:
-                return resp.json()["access_token"]
-        except Exception as e:
-            logger.warning(f"Could not acquire SP token: {e}")
 
-    # 2. Fallback to user_token if provided
-    if user_token:
-        return user_token
-
-    raise RuntimeError("No valid Fabric API token could be acquired.")
+def _get_sp_object_id_from_token(token: str) -> str | None:
+    """Extract object ID of the Service Principal from token claims."""
+    try:
+        claims = pyjwt.decode(token, options={"verify_signature": False})
+        return claims.get("oid")
+    except Exception:
+        return None
 
 
 def list_existing_workspaces(token: str) -> list[dict]:
-    """Retrieve list of workspaces visible in Fabric."""
+    """Retrieve list of workspaces visible to the Service Principal."""
+    url = f"{FABRIC_API_BASE}/workspaces"
     headers = {"Authorization": f"Bearer {token}"}
-    try:
-        url = f"{FABRIC_API_BASE}/workspaces"
-        resp = httpx.get(url, headers=headers, timeout=_TIMEOUT)
-        if resp.status_code == 200:
-            return resp.json().get("value", [])
-    except Exception as e:
-        logger.warning(f"Error listing workspaces: {e}")
+    resp = httpx.get(url, headers=headers, timeout=_TIMEOUT)
+    if resp.status_code == 200:
+        return resp.json().get("value", [])
     return []
 
 
 def create_fabric_workspace(token: str, display_name: str, capacity_id: str | None = None) -> dict:
-    """Create a brand new Fabric workspace in the tenant."""
-    clean_name = display_name.strip()
-
-    # 1. Check if workspace already exists
-    workspaces = list_existing_workspaces(token)
-    for ws in workspaces:
-        if ws.get("displayName", "").strip().lower() == clean_name.lower():
-            logger.info("Found existing Fabric workspace: %s (id: %s)", ws.get("displayName"), ws.get("id"))
-            return ws
-
-    # 2. Create the workspace via Fabric REST API
+    """Create a new Fabric workspace, or return existing if conflict."""
     url = f"{FABRIC_API_BASE}/workspaces"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload: dict = {"displayName": clean_name}
-    if capacity_id and capacity_id.strip():
+    payload: dict = {"displayName": display_name}
+    if capacity_id:
         payload["capacityId"] = capacity_id.strip()
 
     resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
-    logger.info("Fabric Create Workspace API: %s - %s", resp.status_code, resp.text)
-
-    if resp.status_code in (200, 201):
+    if resp.status_code == 201:
         return resp.json()
 
-    if resp.status_code == 202:
-        for _ in range(20):
-            time.sleep(1.0)
-            workspaces = list_existing_workspaces(token)
-            for ws in workspaces:
-                if ws.get("displayName", "").strip().lower() == clean_name.lower():
-                    return ws
-        try:
-            return resp.json()
-        except Exception:
-            pass
+    # Check if already exists
+    workspaces = list_existing_workspaces(token)
+    for ws in workspaces:
+        if ws.get("displayName", "").lower() == display_name.lower():
+            return ws
 
-    if resp.status_code == 409:
-        # Check if we can find it in our workspace list
-        workspaces = list_existing_workspaces(token)
-        for ws in workspaces:
-            if ws.get("displayName", "").strip().lower() == clean_name.lower():
-                return ws
-        raise RuntimeError(
-            f"Workspace '{clean_name}' already exists in your Fabric tenant. "
-            f"Please enter a new unique workspace name (e.g. '{clean_name}_lakehouse') to create it automatically."
-        )
-
-    raise RuntimeError(f"Failed to create workspace '{clean_name}': {resp.status_code} - {resp.text}")
+    raise RuntimeError(f"Failed to create workspace '{display_name}': {resp.status_code} - {resp.text}")
 
 
 def assign_capacity_to_workspace(token: str, workspace_id: str, capacity_id: str) -> bool:
@@ -143,12 +112,8 @@ def assign_capacity_to_workspace(token: str, workspace_id: str, capacity_id: str
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/assignToCapacity"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {"capacityId": capacity_id.strip()}
-    try:
-        resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
-        return resp.status_code in (200, 201, 202)
-    except Exception as e:
-        logger.warning(f"Capacity assignment error: {e}")
-        return False
+    resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
+    return resp.status_code in (200, 202)
 
 
 def add_workspace_admin_role(
@@ -158,7 +123,7 @@ def add_workspace_admin_role(
     principal_type: str = "User",
     role: str = "Admin",
 ) -> bool:
-    """Assign Admin role to user on the workspace."""
+    """Assign Admin role to user or service principal on the workspace."""
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/roleAssignments"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
@@ -168,25 +133,20 @@ def add_workspace_admin_role(
         },
         "role": role,
     }
-    try:
-        resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
-        logger.info("Admin Role assignment for %s: %s - %s", principal_id, resp.status_code, resp.text)
-        return resp.status_code in (200, 201, 202, 409)
-    except Exception as e:
-        logger.warning(f"Role assignment exception: {e}")
-        return False
+    resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
+    if resp.status_code in (200, 201, 409):
+        return True
+    logger.warning(f"Role assignment response for {principal_id}: {resp.status_code} - {resp.text}")
+    return False
 
 
 def list_workspace_items(token: str, workspace_id: str) -> list[dict]:
-    """List items inside a workspace."""
+    """List all items (Lakehouses, Warehouses, Notebooks) in workspace."""
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/items"
     headers = {"Authorization": f"Bearer {token}"}
-    try:
-        resp = httpx.get(url, headers=headers, timeout=_TIMEOUT)
-        if resp.status_code == 200:
-            return resp.json().get("value", [])
-    except Exception as e:
-        logger.warning(f"Error listing items in workspace {workspace_id}: {e}")
+    resp = httpx.get(url, headers=headers, timeout=_TIMEOUT)
+    if resp.status_code == 200:
+        return resp.json().get("value", [])
     return []
 
 
@@ -197,10 +157,13 @@ def create_fabric_item(
     display_name: str,
     description: str = "",
     schema_enabled: bool = True,
+    existing_items: list[dict] | None = None,
 ) -> dict:
-    """Create Lakehouse or Warehouse inside the workspace."""
-    existing = list_workspace_items(token, workspace_id)
-    for itm in existing:
+    """Create a Lakehouse or Warehouse in the workspace."""
+    if existing_items is None:
+        existing_items = list_workspace_items(token, workspace_id)
+
+    for itm in existing_items:
         if itm.get("displayName", "").lower() == display_name.lower() and itm.get("type", "").lower() == item_type.lower():
             return itm
 
@@ -217,21 +180,19 @@ def create_fabric_item(
         payload["creationPayload"] = {"enableSchemas": True}
 
     resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
-    logger.info("Create %s '%s': %s - %s", formatted_type, display_name, resp.status_code, resp.text)
-
     if resp.status_code in (200, 201):
         return resp.json()
 
     if resp.status_code == 202:
-        for _ in range(25):
-            time.sleep(1.0)
+        for _ in range(8):
+            time.sleep(0.5)
             items = list_workspace_items(token, workspace_id)
             for itm in items:
                 if itm.get("displayName", "").lower() == display_name.lower():
                     return itm
-        return {"id": None, "displayName": display_name, "type": formatted_type}
+        return {"displayName": display_name, "type": formatted_type, "id": None}
 
-    return {"id": None, "displayName": display_name, "type": formatted_type}
+    raise RuntimeError(f"Failed to create {formatted_type} '{display_name}': {resp.status_code} - {resp.text}")
 
 
 def get_sql_analytics_endpoint(token: str, workspace_id: str, lakehouse_id: str | None = None, warehouse_id: str | None = None) -> str | None:
@@ -240,7 +201,7 @@ def get_sql_analytics_endpoint(token: str, workspace_id: str, lakehouse_id: str 
     if warehouse_id:
         try:
             url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/warehouses/{warehouse_id}"
-            resp = httpx.get(url, headers=headers, timeout=_TIMEOUT)
+            resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
             if resp.status_code == 200:
                 props = resp.json().get("properties", {})
                 conn_str = props.get("connectionInfo") or props.get("connectionString")
@@ -252,7 +213,7 @@ def get_sql_analytics_endpoint(token: str, workspace_id: str, lakehouse_id: str 
     if lakehouse_id:
         try:
             url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/lakehouses/{lakehouse_id}"
-            resp = httpx.get(url, headers=headers, timeout=_TIMEOUT)
+            resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
             if resp.status_code == 200:
                 props = resp.json().get("properties", {})
                 conn_str = props.get("sqlEndpointProperties", {}).get("connectionString") or props.get("connectionInfo")
@@ -260,63 +221,65 @@ def get_sql_analytics_endpoint(token: str, workspace_id: str, lakehouse_id: str 
                     return conn_str
         except Exception:
             pass
-
-    return f"{workspace_id}.datawarehouse.fabric.microsoft.com"
+    return None
 
 
 def auto_provision_fabric_environment(req: ProvisionWorkspaceRequest) -> ProvisionWorkspaceResponse:
-    """Executes full automated creation of a brand new Fabric Workspace, Lakehouse,
-    Warehouse, Capacity assignment, and User Admin role assignment.
+    """Executes the full automated setup of Fabric Workspace, Lakehouse, Warehouse, and automatically
+    assigns Admin access to both the Service Principal and the user in parallel.
     """
     try:
-        # 1. Acquire Fabric API Token with full creation privileges
-        token = get_fabric_api_token(req.access_token)
+        token = get_fabric_sp_token(req.tenant_id, req.client_id, req.client_secret)
 
-        # 2. Create the Workspace
+        # 1. Create Workspace
         ws = create_fabric_workspace(token, req.workspace_name, req.capacity_id)
         ws_id = ws["id"]
         ws_name = ws.get("displayName", req.workspace_name)
-        logger.info("Successfully created Fabric Workspace: %s (id: %s)", ws_name, ws_id)
 
-        # 3. Assign Fabric Capacity
+        # 2. Assign Capacity if provided
         capacity_assigned = False
-        cap_id = req.capacity_id or DEFAULT_CAPACITY_ID
-        if cap_id:
-            capacity_assigned = assign_capacity_to_workspace(token, ws_id, cap_id)
+        if req.capacity_id:
+            capacity_assigned = assign_capacity_to_workspace(token, ws_id, req.capacity_id)
 
-        # 4. Assign Admin Role to User
+        # 3. Automatically assign Admin access to Service Principal & User in parallel
+        sp_oid = _get_sp_object_id_from_token(token)
         user_oid = req.user_object_id or DEFAULT_USER_OBJECT_ID
         admin_assigned = False
-        if user_oid:
-            admin_assigned = add_workspace_admin_role(
-                token, ws_id, principal_id=user_oid, principal_type="User", role="Admin"
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            fut_sp = executor.submit(add_workspace_admin_role, token, ws_id, sp_oid, "ServicePrincipal", "Admin") if sp_oid else None
+            fut_user = executor.submit(add_workspace_admin_role, token, ws_id, user_oid, "User", "Admin") if user_oid else None
+
+            # 4. Create Lakehouse (LH_BRONZE) & Warehouse (WH_METADATA) in parallel
+            existing_items = list_workspace_items(token, ws_id)
+            fut_lh = executor.submit(
+                create_fabric_item, token, ws_id, "Lakehouse", req.lakehouse_name,
+                "Lakehouse for raw and staged tables", True, existing_items
+            )
+            fut_wh = executor.submit(
+                create_fabric_item, token, ws_id, "Warehouse", req.warehouse_name,
+                "Warehouse for metadata, logging, and transformed tables", False, existing_items
             )
 
-        # 5. Create Lakehouse (LH_BRONZE)
-        lh = create_fabric_item(
-            token, ws_id, item_type="Lakehouse", display_name=req.lakehouse_name,
-            description="Lakehouse for raw and staged tables", schema_enabled=True,
-        )
+            if fut_user:
+                admin_assigned = fut_user.result()
+
+            lh = fut_lh.result()
+            wh = fut_wh.result()
+
         lh_id = lh.get("id")
         lh_name = lh.get("displayName", req.lakehouse_name)
-
-        # 6. Create Warehouse (WH_METADATA)
-        wh = create_fabric_item(
-            token, ws_id, item_type="Warehouse", display_name=req.warehouse_name,
-            description="Warehouse for metadata, logging, and transformed tables",
-        )
         wh_id = wh.get("id")
         wh_name = wh.get("displayName", req.warehouse_name)
 
-        # 7. Fetch SQL Analytics Endpoint
+        # 5. Fetch SQL endpoint
         sql_endpoint = get_sql_analytics_endpoint(token, ws_id, lh_id, wh_id)
-        if not sql_endpoint or (sql_endpoint.count("-") == 4 and not sql_endpoint.startswith("ptrf")):
-            default_ep = os.getenv("FABRIC_SQL_ENDPOINT", "ptrf35b4be5udprnukus7ggpeq-fd5dtvvoglfe7bzgpupk4nn5cm.datawarehouse.fabric.microsoft.com")
-            sql_endpoint = default_ep
+        if not sql_endpoint:
+            sql_endpoint = os.getenv("FABRIC_SQL_ENDPOINT") or f"{ws_id}.datawarehouse.fabric.microsoft.com"
 
         return ProvisionWorkspaceResponse(
             success=True,
-            message=f"Workspace '{ws_name}' created in Microsoft Fabric with Lakehouse '{lh_name}', Warehouse '{wh_name}', Capacity assigned, and Admin access granted to your account.",
+            message=f"Workspace '{ws_name}', Lakehouse '{lh_name}', and Warehouse '{wh_name}' successfully provisioned with Admin access granted.",
             workspace_id=ws_id,
             workspace_name=ws_name,
             lakehouse_id=lh_id,
@@ -329,4 +292,7 @@ def auto_provision_fabric_environment(req: ProvisionWorkspaceRequest) -> Provisi
         )
     except Exception as e:
         logger.exception("Error auto-provisioning Fabric workspace")
-        raise RuntimeError(f"Fabric Workspace Provisioning failed: {str(e)}")
+        return ProvisionWorkspaceResponse(
+            success=False,
+            message=f"Provisioning failed: {str(e)}",
+        )

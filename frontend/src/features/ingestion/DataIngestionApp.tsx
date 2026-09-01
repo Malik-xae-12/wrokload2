@@ -15,24 +15,13 @@ import {
   X,
   Search,
   Cpu,
+  Plus,
   RotateCcw,
-  LogIn,
-  User,
-  FolderPlus,
-  FolderGit2,
 } from 'lucide-react';
 import { ingestionApi } from './services/ingestionApi';
 import {
-  requestFabricToken,
-  getFabricToken,
-  isFabricTokenExpired,
-  getFabricTokenUserInfo,
-  clearFabricToken,
-  setManualFabricToken,
-  onTokenError,
-} from './services/fabricAuth';
-import {
   ProvisionWorkspaceRequest,
+  UserWorkspaceInfo,
   SourceCredentials,
   FabricTargetCredentials,
   DiscoveredTable,
@@ -40,13 +29,27 @@ import {
   TableSyncJobRead,
   SyncJobRunRead,
   IncrementalType,
-  MigrationProjectRead,
-  MigrationProjectCreate,
 } from './types';
 
+interface MigrationProject {
+  id: string;
+  name: string;
+  sourceServer: string;
+  sourceDatabase: string;
+  targetWorkspace: string;
+  targetWarehouse: string;
+  tableCount: number;
+  completedJobs: number;
+  totalJobs: number;
+  totalRows: number;
+  status: 'SUCCESS' | 'RUNNING' | 'FAILED' | 'IDLE';
+  lastRunAt: string | null;
+  createdAt: string;
+}
+
 export const DataIngestionApp: React.FC = () => {
-  // Navigation: Projects Overview vs Wizard
-  const [viewMode, setViewMode] = useState<'projects' | 'wizard'>('projects');
+  // Navigation: Projects List vs Wizard
+  const [viewMode, setViewMode] = useState<'projects' | 'wizard'>('wizard');
   const [activeTab, setActiveTab] = useState<'provision' | 'source' | 'tables' | 'review' | 'jobs'>('provision');
   const [selectedSourceType, setSelectedSourceType] = useState<'azure_sql' | 'synapse' | 'sql_server'>('azure_sql');
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -56,58 +59,108 @@ export const DataIngestionApp: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // ===========================================================================
-  // PROJECTS STATE
-  // ===========================================================================
-  const [projects, setProjects] = useState<MigrationProjectRead[]>([]);
-  const [loadingProjects, setLoadingProjects] = useState(false);
-  const [activeProject, setActiveProject] = useState<MigrationProjectRead | null>(null);
+  // Projects State
+  const [projects, setProjects] = useState<MigrationProject[]>([
+    {
+      id: 'proj-1',
+      name: 'Azure SQL to Fabric Migration',
+      sourceServer: import.meta.env.VITE_DEFAULT_SOURCE_SERVER || 'uiapsqlserver.database.windows.net',
+      sourceDatabase: import.meta.env.VITE_DEFAULT_SOURCE_DATABASE || 'fabricaccelerator',
+      targetWorkspace: import.meta.env.VITE_DEFAULT_WORKSPACE_NAME || 'Data_Migration_Workspace',
+      targetWarehouse: import.meta.env.VITE_DEFAULT_WAREHOUSE_NAME || 'WH_METADATA',
+      tableCount: 3,
+      completedJobs: 3,
+      totalJobs: 3,
+      totalRows: 1420,
+      status: 'SUCCESS',
+      lastRunAt: '2026-08-26 21:55:00',
+      createdAt: '2026-08-26',
+    },
+  ]);
   const [projectFilter, setProjectFilter] = useState('');
 
-<<<<<<< Updated upstream
-  // Active Project Form State (when creating or configuring)
-  const [projectName, setProjectName] = useState('Azure SQL to Fabric Bronze Migration');
-  const [projectDescription, setProjectDescription] = useState('Automated incremental data migration from Azure SQL to Microsoft Fabric Lakehouse and Warehouse');
-
-  // ===========================================================================
-  // FABRIC AUTH STATE
-  // ===========================================================================
-  const [fabricToken, setFabricToken] = useState<string | null>(null);
-  const [fabricSigningIn, setFabricSigningIn] = useState(false);
-  const [fabricSignInError, setFabricSignInError] = useState<string | null>(null);
-  const [showManualTokenInput, setShowManualTokenInput] = useState(false);
-  const [manualTokenText, setManualTokenText] = useState('');
-  const [availableWorkspaces, setAvailableWorkspaces] = useState<Array<{ id: string; displayName: string; description?: string }>>([]);
-  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
-  const [useCustomWorkspace, setUseCustomWorkspace] = useState(false);
-
-  // ===========================================================================
-  // PROVISIONING STATE
-  // ===========================================================================
-  const [provisionReq, setProvisionReq] = useState<Omit<ProvisionWorkspaceRequest, 'access_token'>>({
-    workspace_name: import.meta.env.VITE_DEFAULT_WORKSPACE_NAME || 'test',
-    capacity_id: import.meta.env.VITE_DEFAULT_CAPACITY_ID || '',
+  // Service Principal & Auto-Provisioning State (Dynamically loaded from .env)
+  const [provisionReq, setProvisionReq] = useState<ProvisionWorkspaceRequest>({
+    tenant_id: import.meta.env.VITE_DEFAULT_TENANT_ID || '008502d6-3f79-46f0-ab37-9354e3fe80ff',
+    client_id: import.meta.env.VITE_DEFAULT_CLIENT_ID || '25ad11d7-5885-4f0e-8424-919bf02e04eb',
+    client_secret: import.meta.env.VITE_DEFAULT_CLIENT_SECRET || 'SWE8Q~EtZhXJAxLm_mVlLFBSI~It5ljFjID~kbvn',
+    workspace_name: import.meta.env.VITE_DEFAULT_WORKSPACE_NAME || 'Data_Migration_Workspace',
+    capacity_id: import.meta.env.VITE_DEFAULT_CAPACITY_ID || 'F17A64BA-8BA2-4933-9010-00CA3441CC0B',
     lakehouse_name: import.meta.env.VITE_DEFAULT_LAKEHOUSE_NAME || 'LH_BRONZE',
     warehouse_name: import.meta.env.VITE_DEFAULT_WAREHOUSE_NAME || 'WH_METADATA',
+    user_object_id: import.meta.env.VITE_DEFAULT_USER_OBJECT_ID || '58f505c6-d389-468b-9457-cf50c4a45493',
   });
   const [provisioning, setProvisioning] = useState(false);
   const [provisionResult, setProvisionResult] = useState<any>(null);
 
-  // ===========================================================================
-  // SOURCE & TARGET CREDENTIALS
-  // ===========================================================================
+  // Existing Workspaces Discovery State
+  const [userWorkspaces, setUserWorkspaces] = useState<UserWorkspaceInfo[]>([]);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<'existing' | 'new'>('existing');
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
+
+  // Fetch workspaces where user is Admin, Member, or Contributor
+  const fetchUserWorkspaces = async (silent = false) => {
+    if (!provisionReq.tenant_id || !provisionReq.client_id || !provisionReq.client_secret || !provisionReq.user_object_id) {
+      if (!silent) {
+        showToast('Please provide Tenant ID, Client ID, Client Secret, and User Object ID', 'error');
+      }
+      return;
+    }
+    try {
+      setLoadingWorkspaces(true);
+      const workspaces = await ingestionApi.listUserWorkspaces({
+        tenant_id: provisionReq.tenant_id,
+        client_id: provisionReq.client_id,
+        client_secret: provisionReq.client_secret,
+        user_object_id: provisionReq.user_object_id,
+      });
+      setUserWorkspaces(workspaces);
+      if (workspaces.length > 0) {
+        const match = workspaces.find((w) => w.displayName.toLowerCase() === provisionReq.workspace_name.toLowerCase());
+        const selected = match || workspaces[0];
+        setSelectedWorkspaceId(selected.id);
+        setProvisionReq((prev) => ({
+          ...prev,
+          workspace_name: selected.displayName,
+          capacity_id: selected.capacityId || prev.capacity_id,
+        }));
+        if (!silent) {
+          showToast(`Found ${workspaces.length} accessible workspace(s)`, 'success');
+        }
+      } else {
+        setWorkspaceMode('new');
+        if (!silent) {
+          showToast('No existing workspaces found. Enter a new workspace name.', 'info');
+        }
+      }
+    } catch (err: any) {
+      console.error('Error fetching user workspaces:', err);
+      if (!silent) {
+        showToast(err.message || 'Failed to fetch workspaces', 'error');
+      }
+    } finally {
+      setLoadingWorkspaces(false);
+    }
+  };
+
+  // Source Credentials state (Dynamically loaded from .env)
   const [sourceCreds, setSourceCreds] = useState<SourceCredentials>({
-    server: import.meta.env.VITE_DEFAULT_SOURCE_SERVER || '',
-    database: import.meta.env.VITE_DEFAULT_SOURCE_DATABASE || '',
-    username: import.meta.env.VITE_DEFAULT_SOURCE_USERNAME || '',
+    server: import.meta.env.VITE_DEFAULT_SOURCE_SERVER || 'uiapsqlserver.database.windows.net',
+    database: import.meta.env.VITE_DEFAULT_SOURCE_DATABASE || 'fabricaccelerator',
+    username: import.meta.env.VITE_DEFAULT_SOURCE_USERNAME || 'fauser',
     password: '',
     port: parseInt(import.meta.env.VITE_DEFAULT_SOURCE_PORT || '1433', 10),
   });
 
+  // Target Fabric Credentials state (WH_METADATA default, dynamically loaded from .env)
   const [targetCreds, setTargetCreds] = useState<FabricTargetCredentials>({
     server: import.meta.env.VITE_DEFAULT_TARGET_SERVER || '',
     database: import.meta.env.VITE_DEFAULT_WAREHOUSE_NAME || 'WH_METADATA',
-    auth_mode: 'fabric_token',
+    client_id: import.meta.env.VITE_DEFAULT_CLIENT_ID || '',
+    client_secret: import.meta.env.VITE_DEFAULT_CLIENT_SECRET || '',
+    tenant_id: import.meta.env.VITE_DEFAULT_TENANT_ID || '',
+    auth_mode: 'service_principal',
   });
 
   // Connection testing states
@@ -119,9 +172,7 @@ export const DataIngestionApp: React.FC = () => {
   const [targetStatus, setTargetStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [targetMessage, setTargetMessage] = useState('');
 
-  // ===========================================================================
-  // TABLES & JOBS STATE
-  // ===========================================================================
+  // Table Discovery state
   const [discovering, setDiscovering] = useState(false);
   const [discoveredTables, setDiscoveredTables] = useState<DiscoveredTable[]>([]);
   const [selectedTables, setSelectedTables] = useState<Record<string, boolean>>({});
@@ -140,6 +191,7 @@ export const DataIngestionApp: React.FC = () => {
   >({});
   const [tableFilter, setTableFilter] = useState('');
 
+  // Jobs state
   const [jobs, setJobs] = useState<TableSyncJobRead[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
@@ -149,72 +201,36 @@ export const DataIngestionApp: React.FC = () => {
   const [historyLogs, setHistoryLogs] = useState<SyncJobRunRead[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // ===========================================================================
-  // LIFECYCLE & INITIALIZATION
-  // ===========================================================================
   useEffect(() => {
-    fetchProjects();
-    onTokenError((msg: string) => {
-      setFabricSignInError(msg);
-      setFabricToken(null);
-      showToast(`⚠️ ${msg}`, 'error');
-    });
-
-    // Auto-acquire token directly from Fabric session
-    autoAcquireFabricToken();
+    fetchConfiguredJobs();
   }, []);
 
-  const loadFabricWorkspaces = async (token: string) => {
-    try {
-      setLoadingWorkspaces(true);
-      const wsList = await ingestionApi.listFabricWorkspaces(token);
-      setAvailableWorkspaces(wsList);
-      if (wsList && wsList.length > 0) {
-        const testWs = wsList.find((w) => w.displayName.toLowerCase() === 'test');
-        const chosen = testWs || wsList[0];
-        setProvisionReq((prev) => ({
-          ...prev,
-          workspace_name: chosen.displayName,
-        }));
-      }
-    } catch (err) {
-      console.warn('Could not load workspaces:', err);
-    } finally {
-      setLoadingWorkspaces(false);
-    }
-  };
-
-  const autoAcquireFabricToken = async () => {
-    try {
-      setFabricSigningIn(true);
-      const token = await getFabricToken();
-      setFabricToken(token);
-      loadFabricWorkspaces(token);
-    } catch (err: any) {
-      console.warn('Auto Fabric sign-in on load:', err.message);
-      setFabricSignInError(err.message || 'Could not automatically acquire Fabric token');
-    } finally {
-      setFabricSigningIn(false);
-    }
-  };
-
-  const fetchProjects = async () => {
-    try {
-      setLoadingProjects(true);
-      const data = await ingestionApi.listProjects();
-      setProjects(data);
-    } catch (err: any) {
-      console.error('Failed to fetch projects', err);
-    } finally {
-      setLoadingProjects(false);
-    }
-  };
-
-  const fetchProjectJobs = async (projectId?: string) => {
+  const fetchConfiguredJobs = async () => {
     try {
       setLoadingJobs(true);
-      const data = await ingestionApi.listJobs(projectId);
+      const data = await ingestionApi.listJobs();
       setJobs(data);
+      if (data && data.length > 0) {
+        const completed = data.filter((j) => j.last_run_status === 'SUCCESS').length;
+        const totalRows = data.reduce((sum, j) => sum + (j.last_run_rows || 0), 0);
+        setProjects((prev) => [
+          {
+            ...prev[0],
+            tableCount: data.length,
+            completedJobs: completed,
+            totalJobs: data.length,
+            totalRows: totalRows,
+            status: data.some((j) => j.last_run_status === 'RUNNING')
+              ? 'RUNNING'
+              : data.some((j) => j.last_run_status === 'FAILED')
+              ? 'FAILED'
+              : completed === data.length
+              ? 'SUCCESS'
+              : 'IDLE',
+            lastRunAt: data[0]?.last_run_at || prev[0].lastRunAt,
+          },
+        ]);
+      }
     } catch (err: any) {
       console.error('Failed to fetch jobs', err);
     } finally {
@@ -222,158 +238,42 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
-  // ===========================================================================
-  // PROJECT ACTIONS
-  // ===========================================================================
+  useEffect(() => {
+    fetchUserWorkspaces(true);
+  }, []);
 
-  const handleStartNewProject = () => {
-    setActiveProject(null);
-    setProjectName(`Migration Project ${projects.length + 1}`);
-    setProjectDescription('Azure SQL to Microsoft Fabric Lakehouse and Warehouse ingestion pipeline');
-    setProvisionResult(null);
-    setSelectedTables({});
-    setTableConfigs({});
-    setDiscoveredTables([]);
-    setJobs([]);
-    setViewMode('wizard');
-    setActiveTab('provision');
-  };
-
-  const handleOpenProject = (proj: MigrationProjectRead) => {
-    setActiveProject(proj);
-    setProjectName(proj.name);
-    setProjectDescription(proj.description || '');
-    setSelectedSourceType(proj.source_type || 'azure_sql');
-
-    setSourceCreds((prev) => ({
-      ...prev,
-      server: proj.source_server,
-      database: proj.source_database,
-      username: proj.source_username,
-      port: proj.source_port,
-      password: prev.password, // preserve entered password in session
-    }));
-
-    setTargetCreds((prev) => ({
-      ...prev,
-      server: proj.target_server || '',
-      database: proj.target_database || proj.target_warehouse_name,
-      auth_mode: 'fabric_token',
-    }));
-
-    setProvisionReq({
-      workspace_name: proj.target_workspace_name,
-      capacity_id: '',
-      lakehouse_name: proj.target_lakehouse_name,
-      warehouse_name: proj.target_warehouse_name,
-    });
-
-    if (proj.jobs && proj.jobs.length > 0) {
-      setJobs(proj.jobs);
-    } else {
-      fetchProjectJobs(proj.id);
-    }
-
-    setViewMode('wizard');
-    setActiveTab('jobs');
-  };
-
-  const handleDeleteProject = async (projId: string, projName: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    if (!window.confirm(`Are you sure you want to delete project "${projName}"? All configured sync jobs will be deleted.`)) {
-      return;
-    }
-    try {
-      await ingestionApi.deleteProject(projId);
-      showToast(`Project "${projName}" deleted`, 'success');
-      if (activeProject?.id === projId) {
-        setActiveProject(null);
-        setViewMode('projects');
-      }
-      await fetchProjects();
-    } catch (err: any) {
-      showToast(err.message || 'Failed to delete project', 'error');
-    }
-  };
-
-  // ===========================================================================
-  // AUTH & PROVISIONING HANDLERS
-  // ===========================================================================
-
-  const handleFabricSignIn = async () => {
-    try {
-      setFabricSigningIn(true);
-      setFabricSignInError(null);
-      const token = await requestFabricToken();
-      setFabricToken(token);
-      loadFabricWorkspaces(token);
-      showToast('Signed in with Fabric successfully', 'success');
-    } catch (err: any) {
-      setFabricSignInError(err.message || 'Sign-in failed');
-      showToast(err.message || 'Fabric sign-in failed', 'error');
-    } finally {
-      setFabricSigningIn(false);
-    }
-  };
-
-  const handleApplyManualToken = () => {
-    if (!manualTokenText || !manualTokenText.trim()) {
-      showToast('Please paste a valid Fabric access token', 'error');
-      return;
-    }
-    const ok = setManualFabricToken(manualTokenText.trim());
-    if (ok) {
-      const clean = manualTokenText.trim().replace(/^Bearer\s+/i, '');
-      setFabricToken(clean);
-      setFabricSignInError(null);
-      loadFabricWorkspaces(clean);
-      setManualTokenText('');
-      setShowManualTokenInput(false);
-      showToast('User token applied successfully!', 'success');
-    }
-  };
-
+  // Auto-Provision Workspace & Lakehouse
   const handleAutoProvision = async () => {
-    const wsName = (provisionReq.workspace_name || '').trim() || 'Data_Migration_Workspace';
-    const lhName = (provisionReq.lakehouse_name || '').trim() || 'LH_BRONZE';
-    const whName = (provisionReq.warehouse_name || '').trim() || 'WH_METADATA';
-
+    if (!provisionReq.client_secret || !provisionReq.client_id || !provisionReq.tenant_id) {
+      showToast('Please provide Client ID, Client Secret, and Tenant ID', 'error');
+      return;
+    }
     try {
       setProvisioning(true);
-      showToast(`Creating Fabric workspace "${wsName}" with Lakehouse "${lhName}" & Warehouse "${whName}"...`, 'info');
-
-      const res = await ingestionApi.provisionWorkspace({
-        ...provisionReq,
-        workspace_name: wsName,
-        lakehouse_name: lhName,
-        warehouse_name: whName,
-        access_token: fabricToken || undefined,
-      });
-
+      const res = await ingestionApi.provisionWorkspace(provisionReq);
       if (res.success) {
         setProvisionResult(res);
         setTargetCreds((prev) => ({
           ...prev,
           server: res.sql_endpoint || prev.server,
-          database: res.warehouse_name || whName,
-          access_token: fabricToken || undefined,
+          database: res.warehouse_name || provisionReq.warehouse_name || prev.database,
+          client_id: provisionReq.client_id || prev.client_id,
+          client_secret: provisionReq.client_secret || prev.client_secret,
+          tenant_id: provisionReq.tenant_id || prev.tenant_id,
         }));
         showToast(res.message, 'success');
         setActiveTab('source');
       } else {
-        showToast(res.message || 'Workspace creation failed', 'error');
+        showToast(res.message || 'Provisioning failed', 'error');
       }
     } catch (err: any) {
-      showToast(err.message || 'Workspace creation error', 'error');
+      showToast(err.message || 'Provisioning failed', 'error');
     } finally {
       setProvisioning(false);
     }
   };
 
-  // ===========================================================================
-  // CONNECTION TESTS & TABLE DISCOVERY
-  // ===========================================================================
-
+  // Test Azure SQL Source
   const handleTestSource = async () => {
     try {
       setTestingSource(true);
@@ -397,6 +297,7 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
+  // Test Fabric Target
   const handleTestTarget = async () => {
     try {
       setTestingTarget(true);
@@ -420,6 +321,7 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
+  // Discover tables and auto-configure load type
   const handleDiscoverTables = async () => {
     if (!sourceCreds.password) {
       showToast('Please enter the Azure SQL password first', 'error');
@@ -480,6 +382,7 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
+  // Toggle selection for all tables
   const handleToggleSelectAll = (select: boolean) => {
     const next: Record<string, boolean> = {};
     discoveredTables.forEach((t) => {
@@ -488,10 +391,7 @@ export const DataIngestionApp: React.FC = () => {
     setSelectedTables(next);
   };
 
-  // ===========================================================================
-  // SAVE PROJECT & CONFIGURE JOBS
-  // ===========================================================================
-
+  // Save selected tables as jobs
   const handleSaveAndConfigureJobs = async () => {
     const selectedList = discoveredTables.filter((t) => selectedTables[t.full_name]);
     if (selectedList.length === 0) {
@@ -499,72 +399,34 @@ export const DataIngestionApp: React.FC = () => {
       return;
     }
 
+    const payloadJobs: TableJobConfig[] = selectedList.map((t) => {
+      const cfg = tableConfigs[t.full_name] || {
+        loadType: t.suggested_load_type,
+        incrementalType: t.incremental_type || 'FULL',
+        watermarkColumn: t.suggested_watermark_column,
+        createdColumn: t.created_column,
+        updatedColumn: t.updated_column,
+        targetTable: t.table_name,
+      };
+      return {
+        source_schema: t.schema_name,
+        source_table: t.table_name,
+        target_schema: 'dbo',
+        target_table: cfg.targetTable || t.table_name,
+        load_type: cfg.incrementalType === 'FULL' ? 'FULL' : 'INCREMENTAL',
+        incremental_type: cfg.incrementalType,
+        watermark_column: cfg.incrementalType === 'FULL' ? null : (cfg.watermarkColumn || cfg.updatedColumn || cfg.createdColumn || null),
+        created_column: cfg.createdColumn || t.created_column,
+        updated_column: cfg.updatedColumn || t.updated_column,
+        is_enabled: true,
+      };
+    });
+
     try {
       setLoadingJobs(true);
-
-      // 1. Create or Update the Project in backend
-      let currentProjId = activeProject?.id;
-      if (!currentProjId) {
-        const createPayload: MigrationProjectCreate = {
-          name: projectName || 'Azure SQL to Fabric Bronze Migration',
-          description: projectDescription,
-          source_type: selectedSourceType,
-          source_server: sourceCreds.server,
-          source_database: sourceCreds.database,
-          source_username: sourceCreds.username,
-          source_port: sourceCreds.port,
-          target_workspace_id: provisionResult?.workspace_id || undefined,
-          target_workspace_name: provisionReq.workspace_name,
-          target_lakehouse_name: provisionReq.lakehouse_name,
-          target_warehouse_name: provisionReq.warehouse_name,
-          target_server: targetCreds.server || provisionResult?.sql_endpoint || undefined,
-          target_database: targetCreds.database || provisionReq.warehouse_name,
-          auth_mode: 'fabric_token',
-        };
-        const newProj = await ingestionApi.createProject(createPayload);
-        setActiveProject(newProj);
-        currentProjId = newProj.id;
-      } else {
-        await ingestionApi.updateProject(currentProjId, {
-          name: projectName,
-          description: projectDescription,
-          source_server: sourceCreds.server,
-          source_database: sourceCreds.database,
-          source_username: sourceCreds.username,
-          target_server: targetCreds.server,
-          target_database: targetCreds.database,
-        });
-      }
-
-      // 2. Configure table jobs for this project
-      const payloadJobs: TableJobConfig[] = selectedList.map((t) => {
-        const cfg = tableConfigs[t.full_name] || {
-          loadType: t.suggested_load_type,
-          incrementalType: t.incremental_type || 'FULL',
-          watermarkColumn: t.suggested_watermark_column,
-          createdColumn: t.created_column,
-          updatedColumn: t.updated_column,
-          targetTable: t.table_name,
-        };
-        return {
-          project_id: currentProjId,
-          source_schema: t.schema_name,
-          source_table: t.table_name,
-          target_schema: 'dbo',
-          target_table: cfg.targetTable || t.table_name,
-          load_type: cfg.incrementalType === 'FULL' ? 'FULL' : 'INCREMENTAL',
-          incremental_type: cfg.incrementalType,
-          watermark_column: cfg.incrementalType === 'FULL' ? null : (cfg.watermarkColumn || cfg.updatedColumn || cfg.createdColumn || null),
-          created_column: cfg.createdColumn || t.created_column,
-          updated_column: cfg.updatedColumn || t.updated_column,
-          is_enabled: true,
-        };
-      });
-
-      await ingestionApi.configureJobs(sourceCreds, targetCreds, payloadJobs, currentProjId);
-      showToast(`Saved project "${projectName}" and configured ${payloadJobs.length} tables`, 'success');
-      await fetchProjectJobs(currentProjId);
-      await fetchProjects();
+      await ingestionApi.configureJobs(sourceCreds, targetCreds, payloadJobs);
+      showToast(`Configured ${payloadJobs.length} tables successfully`, 'success');
+      await fetchConfiguredJobs();
       setActiveTab('review');
     } catch (err: any) {
       showToast(err.message || 'Failed to save configurations', 'error');
@@ -573,86 +435,66 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
-  // ===========================================================================
-  // EXECUTION HANDLERS (RUN JOBS)
-  // ===========================================================================
-
+  // Run all enabled jobs
   const handleRunAllJobs = async () => {
     const sSecret = sourceCreds.password;
+    const tSecret = targetCreds.client_secret || provisionReq.client_secret;
 
-    if (!sSecret) {
-      showToast('Source Password is required to run jobs', 'error');
+    if (!sSecret || !tSecret) {
+      showToast('Source Password and Fabric Client Secret are required to run jobs', 'error');
       setActiveTab('source');
       return;
     }
 
-    let token = fabricToken;
-    if (!token || isFabricTokenExpired()) {
-      try {
-        token = await getFabricToken();
-        setFabricToken(token);
-      } catch {
-        // proceed using backend database connection bridge
-      }
-    }
-
     try {
       setRunningAll(true);
-      showToast(`Executing synchronization for all tables in "${projectName}"...`, 'info');
+      showToast('Executing synchronization for all tables into Fabric Warehouse...', 'info');
       const activeTargetCreds: FabricTargetCredentials = {
         ...targetCreds,
-        access_token: token || undefined,
-        auth_mode: 'fabric_token',
-        server: targetCreds.server || provisionResult?.sql_endpoint || '',
+        client_secret: tSecret,
+        client_id: targetCreds.client_id || provisionReq.client_id,
+        tenant_id: targetCreds.tenant_id || provisionReq.tenant_id,
+        server: targetCreds.server || provisionResult?.sql_endpoint || 'ptrf35b4be5udprnukus7ggpeq-fd5dtvvoglfe7bzgpupk4nn5cm.datawarehouse.fabric.microsoft.com',
         database: targetCreds.database || provisionReq.warehouse_name || 'WH_METADATA',
       };
-      const res = await ingestionApi.runAllJobs(sourceCreds, activeTargetCreds, activeProject?.id);
-
+      const res = await ingestionApi.runAllJobs(sourceCreds, activeTargetCreds);
+      
       const failed = res.results.filter((r) => r.status === 'FAILED');
       const totalTransferred = res.results.reduce((sum, r) => sum + (r.rows_transferred || 0), 0);
-
+      
       if (failed.length > 0) {
         showToast(`Sync finished with issues: ${failed[0].error_message || 'Table sync failed'}`, 'error');
       } else {
         showToast(`Sync completed successfully! Transferred ${totalTransferred} rows into ${activeTargetCreds.database}.`, 'success');
       }
-      await fetchProjectJobs(activeProject?.id);
-      await fetchProjects();
+      await fetchConfiguredJobs();
     } catch (err: any) {
-      showToast(err.message || 'Execution completed', 'info');
-      await fetchProjectJobs(activeProject?.id);
-      await fetchProjects();
+      showToast(err.message || 'Execution failed', 'error');
+      await fetchConfiguredJobs();
     } finally {
       setRunningAll(false);
     }
   };
 
+  // Run a single job
   const handleRunSingleJob = async (job: TableSyncJobRead) => {
     const sSecret = sourceCreds.password;
+    const tSecret = targetCreds.client_secret || provisionReq.client_secret;
 
-    if (!sSecret) {
-      showToast('Source Password is required to run job', 'error');
+    if (!sSecret || !tSecret) {
+      showToast('Source Password and Fabric Client Secret are required to run job', 'error');
       setActiveTab('source');
       return;
-    }
-
-    let token = fabricToken;
-    if (!token || isFabricTokenExpired()) {
-      try {
-        token = await getFabricToken();
-        setFabricToken(token);
-      } catch {
-        // proceed using backend database connection bridge
-      }
     }
 
     try {
       showToast(`Executing sync for ${job.source_table}...`, 'info');
       const activeTargetCreds: FabricTargetCredentials = {
         ...targetCreds,
-        access_token: token,
-        auth_mode: 'fabric_token',
-        server: targetCreds.server || provisionResult?.sql_endpoint || '',
+        client_secret: tSecret,
+        client_id: targetCreds.client_id || provisionReq.client_id,
+        tenant_id: targetCreds.tenant_id || provisionReq.tenant_id,
+        server: targetCreds.server || provisionResult?.sql_endpoint || 'ptrf35b4be5udprnukus7ggpeq-fd5dtvvoglfe7bzgpupk4nn5cm.datawarehouse.fabric.microsoft.com',
         database: targetCreds.database || provisionReq.warehouse_name || 'WH_METADATA',
       };
       const res = await ingestionApi.runJob(job.id, sourceCreds, activeTargetCreds);
@@ -661,36 +503,30 @@ export const DataIngestionApp: React.FC = () => {
       } else {
         showToast(`Failed to sync ${res.table_name}: ${res.error_message}`, 'error');
       }
-      await fetchProjectJobs(activeProject?.id);
-      await fetchProjects();
+      await fetchConfiguredJobs();
     } catch (err: any) {
-      if (err.message?.toLowerCase().includes('expired') || err.message?.includes('401')) {
-        clearFabricToken();
-        setFabricToken(null);
-        showToast('Session expired. Please sign in with Fabric again.', 'error');
-      } else {
-        showToast(err.message || `Execution failed for ${job.source_table}`, 'error');
-      }
-      await fetchProjectJobs(activeProject?.id);
-      await fetchProjects();
+      showToast(err.message || `Execution failed for ${job.source_table}`, 'error');
+      await fetchConfiguredJobs();
     }
   };
 
+  // Reset all high watermarks to force fresh full reload
   const handleResetAllWatermarks = async () => {
     try {
-      await ingestionApi.resetAllWatermarks(activeProject?.id);
+      await ingestionApi.resetAllWatermarks();
       showToast('Reset all high watermarks. Next execution will perform a full reload of all rows.', 'success');
-      await fetchProjectJobs(activeProject?.id);
+      await fetchConfiguredJobs();
     } catch (err: any) {
       showToast(err.message || 'Failed to reset watermarks', 'error');
     }
   };
 
+  // Reset watermark for a single job
   const handleResetSingleWatermark = async (jobId: string) => {
     try {
       await ingestionApi.resetJobWatermark(jobId);
       showToast('High watermark reset for table. Next execution will perform a full reload.', 'success');
-      await fetchProjectJobs(activeProject?.id);
+      await fetchConfiguredJobs();
     } catch (err: any) {
       showToast(err.message || 'Failed to reset watermark', 'error');
     }
@@ -700,8 +536,7 @@ export const DataIngestionApp: React.FC = () => {
     try {
       await ingestionApi.deleteJob(jobId);
       showToast('Job removed', 'success');
-      await fetchProjectJobs(activeProject?.id);
-      await fetchProjects();
+      await fetchConfiguredJobs();
     } catch (err: any) {
       showToast(err.message || 'Failed to delete job', 'error');
     }
@@ -731,11 +566,11 @@ export const DataIngestionApp: React.FC = () => {
 
   // Stepper Items config
   const steps = [
-    { id: 'provision', label: 'Select & Configure Destination' },
-    { id: 'source', label: 'Connect Source Database' },
-    { id: 'tables', label: 'Select & Configure Tables' },
-    { id: 'review', label: 'Review & Save Project' },
-    { id: 'jobs', label: 'Execution Dashboard & Sync' },
+    { id: 'provision', label: 'Select source' },
+    { id: 'source', label: 'Upload source' },
+    { id: 'tables', label: 'Select and configure tables' },
+    { id: 'review', label: 'Review & Sync' },
+    { id: 'jobs', label: 'Jobs' },
   ];
 
   const currentStepIdx = steps.findIndex((s) => s.id === activeTab);
@@ -773,7 +608,6 @@ export const DataIngestionApp: React.FC = () => {
                 setActiveTab(steps[currentStepIdx - 1].id as any);
               } else {
                 setViewMode('projects');
-                fetchProjects();
               }
             }}
             className="flex items-center gap-1 font-semibold text-[#201f1e] hover:text-[#008272] cursor-pointer"
@@ -783,58 +617,57 @@ export const DataIngestionApp: React.FC = () => {
           <div className="h-3.5 w-px bg-[#e1dfdd]" />
           <div className="flex items-center gap-1.5 text-[#605e5c]">
             <span
-              onClick={() => {
-                setViewMode('projects');
-                fetchProjects();
-              }}
+              onClick={() => setViewMode('projects')}
               className={`cursor-pointer hover:text-[#008272] ${viewMode === 'projects' ? 'font-bold text-[#201f1e]' : ''}`}
             >
-              Migration Projects
+              Code projects
             </span>
             {viewMode === 'wizard' && (
               <>
                 <ChevronRight className="w-3 h-3 text-[#a19f9d]" />
-                <span className="font-semibold text-[#201f1e] truncate max-w-sm">
-                  {activeProject ? activeProject.name : 'New Migration Project'}
-                </span>
+                <span className="font-semibold text-[#201f1e]">New code project</span>
               </>
             )}
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          {viewMode === 'wizard' && (
+          {viewMode === 'wizard' ? (
             <button
-              onClick={() => {
-                setViewMode('projects');
-                fetchProjects();
-              }}
+              onClick={() => setViewMode('projects')}
               className="px-3 py-1 text-xs font-semibold text-[#323130] bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] transition cursor-pointer"
             >
-              All Projects
+              View All Projects
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setViewMode('wizard');
+                setActiveTab('provision');
+              }}
+              className="px-3 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" /> New Code Project
             </button>
           )}
         </div>
       </div>
 
-      {/* ================= VIEW 1: PROJECTS OVERVIEW & METRICS ================= */}
+      {/* ================= VIEW 1: PROJECTS LIST & PROGRESS ================= */}
       {viewMode === 'projects' && (
         <div className="flex-1 p-5 sm:p-6 max-w-7xl w-full mx-auto space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <p className="text-[11px] text-[#605e5c] font-medium">Workspace Overview</p>
-              <h2 className="text-lg font-bold text-[#201f1e]">Data Migration Projects</h2>
-              <p className="text-xs text-[#605e5c]">
-                Each project encapsulates a defined Source database, Fabric Target warehouse, and configured sync jobs.
-              </p>
+              <h2 className="text-lg font-bold text-[#201f1e]">Projects &amp; Migration Progress</h2>
             </div>
 
             <div className="flex items-center gap-3">
-              <div className="relative w-72">
+              <div className="relative w-60">
                 <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[#605e5c]" />
                 <input
                   type="text"
-                  placeholder="Filter projects by name or database..."
+                  placeholder="Filter projects..."
                   value={projectFilter}
                   onChange={(e) => setProjectFilter(e.target.value)}
                   className="w-full text-xs h-8 pl-8 pr-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none"
@@ -842,164 +675,112 @@ export const DataIngestionApp: React.FC = () => {
               </div>
 
               <button
-                onClick={fetchProjects}
-                disabled={loadingProjects}
-                className="p-2 bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] text-[#323130] cursor-pointer"
-                title="Refresh Projects"
+                onClick={() => {
+                  setViewMode('wizard');
+                  setActiveTab('provision');
+                }}
+                className="px-3.5 py-1.5 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${loadingProjects ? 'animate-spin' : ''}`} />
+                <Plus className="w-3.5 h-3.5" /> Create Project
               </button>
             </div>
           </div>
 
           {/* Projects Table */}
           <div className="bg-white border border-[#e1dfdd] rounded-lg shadow-2xs overflow-hidden">
-            {loadingProjects ? (
-              <div className="py-12 text-center text-xs text-[#605e5c] flex items-center justify-center gap-2">
-                <RefreshCw className="w-4 h-4 animate-spin text-[#008272]" /> Loading migration projects...
-              </div>
-            ) : projects.length === 0 ? (
-              <div className="py-16 text-center space-y-3">
-                <FolderPlus className="w-10 h-10 text-[#a19f9d] mx-auto" />
-                <div>
-                  <p className="text-sm font-bold text-[#201f1e]">No migration projects created yet</p>
-                  <p className="text-xs text-[#605e5c] mt-0.5">
-                    Create a project to map an Azure SQL source to a Microsoft Fabric destination with automatic table synchronization.
-                  </p>
-                </div>
-                <button
-                  onClick={handleStartNewProject}
-                  className="mt-2 px-4 py-1.5 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition cursor-pointer"
-                >
-                  Create Your First Project
-                </button>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#f3f2f1] border-b border-[#e1dfdd] text-[11px] font-bold text-[#323130] uppercase tracking-wider">
-                      <th className="py-2.5 px-4">Project Name</th>
-                      <th className="py-2.5 px-4">Source Database</th>
-                      <th className="py-2.5 px-4">Target Fabric Destination</th>
-                      <th className="py-2.5 px-4">Tables</th>
-                      <th className="py-2.5 px-4">Sync Progress</th>
-                      <th className="py-2.5 px-4">Status</th>
-                      <th className="py-2.5 px-4">Last Run</th>
-                      <th className="py-2.5 px-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#e1dfdd] text-xs">
-                    {projects
-                      .filter(
-                        (p) =>
-                          p.name.toLowerCase().includes(projectFilter.toLowerCase()) ||
-                          p.source_database.toLowerCase().includes(projectFilter.toLowerCase()) ||
-                          p.target_warehouse_name.toLowerCase().includes(projectFilter.toLowerCase())
-                      )
-                      .map((proj) => {
-                        const pct = proj.total_jobs > 0 ? Math.round((proj.completed_jobs / proj.total_jobs) * 100) : 0;
-                        return (
-                          <tr key={proj.id} className="hover:bg-[#f8f9fa] transition group">
-                            <td className="py-3 px-4 font-semibold text-[#201f1e]">
-                              <button
-                                onClick={() => handleOpenProject(proj)}
-                                className="text-left hover:text-[#008272] hover:underline font-bold text-xs cursor-pointer flex items-center gap-1.5"
-                              >
-                                <FolderGit2 className="w-3.5 h-3.5 text-[#008272] flex-shrink-0" />
-                                {proj.name}
-                              </button>
-                              {proj.description && (
-                                <p className="text-[10px] text-[#605e5c] font-normal truncate max-w-sm mt-0.5">
-                                  {proj.description}
-                                </p>
-                              )}
-                            </td>
-                            <td className="py-3 px-4 text-[#323130]">
-                              <div className="flex items-center gap-1">
-                                <Database className="w-3 h-3 text-[#0078d4] flex-shrink-0" />
-                                <span className="font-mono text-xs font-medium">{proj.source_database}</span>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#f3f2f1] border-b border-[#e1dfdd] text-[11px] font-bold text-[#323130] uppercase tracking-wider">
+                    <th className="py-2.5 px-4">Project Name</th>
+                    <th className="py-2.5 px-4">Source Database</th>
+                    <th className="py-2.5 px-4">Target Fabric Warehouse</th>
+                    <th className="py-2.5 px-4">Tables</th>
+                    <th className="py-2.5 px-4">Sync Progress</th>
+                    <th className="py-2.5 px-4">Status</th>
+                    <th className="py-2.5 px-4">Last Run</th>
+                    <th className="py-2.5 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#e1dfdd] text-xs">
+                  {projects
+                    .filter((p) => p.name.toLowerCase().includes(projectFilter.toLowerCase()))
+                    .map((proj) => {
+                      const pct = proj.totalJobs > 0 ? Math.round((proj.completedJobs / proj.totalJobs) * 100) : 0;
+                      return (
+                        <tr key={proj.id} className="hover:bg-[#f8f9fa] transition">
+                          <td className="py-2.5 px-4 font-semibold text-[#201f1e]">
+                            <button
+                              onClick={() => {
+                                setViewMode('wizard');
+                                setActiveTab('jobs');
+                              }}
+                              className="text-left hover:text-[#008272] hover:underline font-bold text-xs cursor-pointer"
+                            >
+                              {proj.name}
+                            </button>
+                            <p className="text-[10px] text-[#605e5c] font-normal">Created: {proj.createdAt}</p>
+                          </td>
+                          <td className="py-2.5 px-4 text-[#323130]">
+                            <p className="font-mono text-xs">{proj.sourceDatabase}</p>
+                            <p className="text-[10px] text-[#605e5c] truncate max-w-xs">{proj.sourceServer}</p>
+                          </td>
+                          <td className="py-2.5 px-4 text-[#008272]">
+                            <p className="font-mono text-xs">{proj.targetWarehouse}</p>
+                            <p className="text-[10px] text-[#605e5c]">{proj.targetWorkspace}</p>
+                          </td>
+                          <td className="py-2.5 px-4 font-semibold text-[#323130]">
+                            {proj.tableCount} tables
+                          </td>
+                          <td className="py-2.5 px-4 w-44">
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-[10px] font-semibold text-[#605e5c]">
+                                <span>{proj.completedJobs}/{proj.totalJobs} synced</span>
+                                <span>{pct}%</span>
                               </div>
-                              <p className="text-[10px] text-[#605e5c] truncate max-w-xs">{proj.source_server}</p>
-                            </td>
-                            <td className="py-3 px-4 text-[#008272]">
-                              <div className="flex items-center gap-1">
-                                <Server className="w-3 h-3 text-[#008272] flex-shrink-0" />
-                                <span className="font-mono text-xs font-semibold">{proj.target_warehouse_name}</span>
+                              <div className="w-full h-1.5 bg-[#edebe9] rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-[#008272] rounded-full transition-all duration-300"
+                                  style={{ width: `${pct}%` }}
+                                />
                               </div>
-                              <p className="text-[10px] text-[#605e5c]">
-                                {proj.target_workspace_name || 'Fabric Workspace'}
-                              </p>
-                            </td>
-                            <td className="py-3 px-4 font-semibold text-[#323130]">
-                              {proj.table_count} tables
-                            </td>
-                            <td className="py-3 px-4 w-44">
-                              <div className="space-y-1">
-                                <div className="flex items-center justify-between text-[10px] font-semibold text-[#605e5c]">
-                                  <span>{proj.completed_jobs}/{proj.total_jobs} synced</span>
-                                  <span>{pct}%</span>
-                                </div>
-                                <div className="w-full h-1.5 bg-[#edebe9] rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-[#008272] rounded-full transition-all duration-300"
-                                    style={{ width: `${pct}%` }}
-                                  />
-                                </div>
-                              </div>
-                            </td>
-                            <td className="py-3 px-4">
-                              <span
-                                className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
-                                  proj.status === 'SUCCESS'
-                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                    : proj.status === 'RUNNING'
-                                    ? 'bg-teal-50 text-teal-800 border border-teal-200 animate-pulse'
-                                    : proj.status === 'FAILED'
-                                    ? 'bg-red-50 text-red-800 border border-red-200'
-                                    : 'bg-gray-100 text-gray-700 border border-gray-200'
-                                }`}
-                              >
-                                {proj.status}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-[#605e5c] text-[11px]">
-                              {proj.last_run_at ? new Date(proj.last_run_at).toLocaleString() : 'Never'}
-                            </td>
-                            <td className="py-3 px-4 text-right">
-                              <div className="flex items-center justify-end gap-1.5">
-                                <button
-                                  onClick={() => handleOpenProject(proj)}
-                                  className="px-2.5 py-1 bg-[#f3f2f1] hover:bg-[#edebe9] text-[#201f1e] font-semibold text-xs rounded border border-[#8a8886] transition cursor-pointer"
-                                >
-                                  Open
-                                </button>
-                                <button
-                                  onClick={(e) => handleDeleteProject(proj.id, proj.name, e)}
-                                  className="p-1 hover:bg-red-50 text-[#a19f9d] hover:text-red-600 rounded transition cursor-pointer"
-                                  title="Delete Project"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-4">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              {proj.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-4 text-[#605e5c] text-[11px]">
+                            {proj.lastRunAt || 'Never'}
+                          </td>
+                          <td className="py-2.5 px-4 text-right">
+                            <button
+                              onClick={() => {
+                                setViewMode('wizard');
+                                setActiveTab('jobs');
+                              }}
+                              className="px-2.5 py-1 bg-[#f3f2f1] hover:bg-[#edebe9] text-[#201f1e] font-semibold text-xs rounded border border-[#8a8886] transition cursor-pointer"
+                            >
+                              Open
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
 
-      {/* ================= VIEW 2: WIZARD STEPPER (ACTIVE PROJECT) ================= */}
+      {/* ================= VIEW 2: WIZARD STEPPER ================= */}
       {viewMode === 'wizard' && (
         <div className="flex-1 flex flex-col lg:flex-row p-4 sm:p-6 gap-6 w-full mx-auto">
           {/* LEFT VERTICAL STEPPER */}
-          <nav className="w-full lg:w-64 flex-shrink-0 select-none py-1">
-            <div className="relative flex flex-col space-y-5">
+          <nav className="w-full lg:w-52 flex-shrink-0 select-none">
+            <div className="relative flex flex-col space-y-4">
               {/* Connecting vertical line */}
               <div className="absolute left-[11px] top-3 bottom-3 w-[2px] bg-[#e1dfdd] -z-0" />
 
@@ -1015,9 +796,9 @@ export const DataIngestionApp: React.FC = () => {
                   >
                     {/* Step Circle Indicator */}
                     <div
-                      className={`w-5.5 h-5.5 rounded-full flex items-center justify-center transition-all ${
+                      className={`w-5 h-5 rounded-full flex items-center justify-center transition-all ${
                         isActive
-                          ? 'bg-[#008272] text-white ring-3 ring-[#008272]/20 shadow-xs'
+                          ? 'bg-[#008272] text-white ring-3 ring-[#008272]/20'
                           : isPast
                           ? 'bg-[#008272] text-white'
                           : 'bg-white border border-[#8a8886] group-hover:border-[#008272]'
@@ -1033,7 +814,7 @@ export const DataIngestionApp: React.FC = () => {
                     {/* Step Label */}
                     <div>
                       <p
-                        className={`text-xs leading-snug ${
+                        className={`text-xs leading-tight ${
                           isActive
                             ? 'text-[#201f1e] font-bold'
                             : isPast
@@ -1052,147 +833,78 @@ export const DataIngestionApp: React.FC = () => {
 
           {/* MAIN WIZARD CONTENT AREA */}
           <main className="flex-1 min-w-0">
-            {/* Header Title & Project Metadata input */}
-            <div className="mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <p className="text-[11px] text-[#605e5c] font-medium">Project Pipeline Configuration</p>
-                <h2 className="text-lg font-bold text-[#201f1e]">
-                  {activeTab === 'provision' && 'Fabric Destination Setup'}
-                  {activeTab === 'source' && 'Source Database Connection'}
-                  {activeTab === 'tables' && 'Table Selection & Watermark Strategy'}
-                  {activeTab === 'review' && 'Review & Persist Project'}
-                  {activeTab === 'jobs' && 'Execution Jobs & Progress'}
-                </h2>
-              </div>
-
-              {/* Project Name editable pill */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[#605e5c] font-medium">Project:</span>
-                <input
-                  type="text"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  className="text-xs font-bold px-2 py-1 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none w-56"
-                  placeholder="Enter project name..."
-                />
-              </div>
+            {/* Header Title */}
+            <div className="mb-3">
+              <p className="text-[11px] text-[#605e5c] font-medium">Create new code project</p>
+              <h2 className="text-lg font-bold text-[#201f1e]">
+                {activeTab === 'provision' && 'Fabric Auto-Provisioning'}
+                {activeTab === 'source' && 'Select source database'}
+                {activeTab === 'tables' && 'Select and configure tables'}
+                {activeTab === 'review' && 'Review & Sync'}
+                {activeTab === 'jobs' && 'Execution Jobs & Dashboard'}
+              </h2>
             </div>
 
-            {/* TAB 1: FABRIC DESTINATION / PROVISIONING */}
+            {/* TAB 1: SELECT SOURCE / FABRIC AUTO-PROVISION (INCREASED WIDTH & HEIGHT, NOT FULL WIDTH) */}
             {activeTab === 'provision' && (
               <div className="space-y-3 animate-in fade-in-50 duration-200 max-w-5xl w-full">
                 <p className="text-xs text-[#605e5c]">
-                  Configure or auto-provision the Microsoft Fabric Workspace, Lakehouse (<code className="text-[#008272] font-semibold">LH_BRONZE</code>), and Warehouse (<code className="text-[#008272] font-semibold">WH_METADATA</code>) for this project.
+                  Automatically provision Microsoft Fabric Workspace, Lakehouse (<code className="text-[#008272] font-semibold">LH_BRONZE</code>), and Warehouse (<code className="text-[#008272] font-semibold">WH_METADATA</code>).
                 </p>
 
                 <div className="bg-white border border-[#e1dfdd] rounded-lg p-6 sm:p-7 shadow-2xs space-y-5 min-h-[340px]">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                     <div className="space-y-3.5">
-                      {/* Fabric Sign-In Section */}
                       <div>
-                        <label className="block text-[11px] font-semibold text-[#323130] mb-1.5">
-                          Fabric Session Authentication
+                        <label className="block text-[11px] font-semibold text-[#323130] mb-1">
+                          Tenant ID (Azure AD GUID)
                         </label>
-                        {fabricToken && !isFabricTokenExpired() ? (
-                          <div className="p-3 rounded-md bg-emerald-50 border border-emerald-200 space-y-2">
-                            <div className="flex items-center gap-2">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                              <span className="text-xs font-bold text-emerald-800">Signed in with Fabric</span>
-                            </div>
-                            {getFabricTokenUserInfo() && (
-                              <div className="flex items-center gap-2 text-[11px] text-emerald-700">
-                                <User className="w-3 h-3 flex-shrink-0" />
-                                <span className="font-medium">
-                                  {getFabricTokenUserInfo()?.name}
-                                  {getFabricTokenUserInfo()?.email && (
-                                    <span className="text-emerald-600 ml-1">({getFabricTokenUserInfo()?.email})</span>
-                                  )}
-                                </span>
-                              </div>
-                            )}
-                            <button
-                              onClick={() => { clearFabricToken(); setFabricToken(null); }}
-                              className="text-[10px] text-emerald-600 hover:text-emerald-800 underline cursor-pointer"
-                            >
-                              Sign out
-                            </button>
-                          </div>
-                        ) : fabricToken && isFabricTokenExpired() ? (
-                          <div className="p-3 rounded-md bg-amber-50 border border-amber-200 space-y-2">
-                            <div className="flex items-center gap-2">
-                              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                              <span className="text-xs font-bold text-amber-800">Session expired</span>
-                            </div>
-                            <p className="text-[11px] text-amber-700">Your Fabric token has expired. Click below to re-authenticate.</p>
-                            <button
-                              onClick={handleFabricSignIn}
-                              disabled={fabricSigningIn}
-                              className="px-3 py-1.5 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                            >
-                              {fabricSigningIn ? <RefreshCw className="w-3 h-3 animate-spin" /> : <LogIn className="w-3 h-3" />}
-                              Re-authenticate
-                            </button>
-                          </div>
-                        ) : fabricSigningIn ? (
-                          <div className="p-3 rounded-md bg-teal-50 border border-teal-200 flex items-center gap-2">
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#008272]" />
-                            <span className="text-xs font-semibold text-teal-900">Acquiring Fabric session token...</span>
-                          </div>
-                        ) : (
-                          <div className="p-3 rounded-md bg-[#f8f9fa] border border-[#e1dfdd] space-y-2.5">
-                            <p className="text-[11px] text-[#605e5c]">
-                              Sign in using your Fabric account or paste your user access token directly.
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={handleFabricSignIn}
-                                disabled={fabricSigningIn}
-                                className="px-4 py-2 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-2 disabled:opacity-50 cursor-pointer"
-                              >
-                                <LogIn className="w-3.5 h-3.5" />
-                                Sign in with Fabric
-                              </button>
-                              <button
-                                onClick={() => setShowManualTokenInput(!showManualTokenInput)}
-                                className="px-3 py-2 text-xs font-semibold text-[#008272] hover:bg-teal-50 border border-[#008272] rounded transition cursor-pointer"
-                              >
-                                {showManualTokenInput ? 'Cancel' : 'Paste Token'}
-                              </button>
-                            </div>
+                        <input
+                          type="text"
+                          value={provisionReq.tenant_id}
+                          onChange={(e) => setProvisionReq({ ...provisionReq, tenant_id: e.target.value })}
+                          className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none"
+                          placeholder="f45de27c-093c-413b-be2d-a2a92f98cf24"
+                        />
+                      </div>
 
-                            {showManualTokenInput && (
-                              <div className="pt-2 border-t border-[#e1dfdd] space-y-2">
-                                <label className="block text-[11px] font-semibold text-[#323130]">
-                                  Paste Fabric User Access Token
-                                </label>
-                                <div className="flex gap-2">
-                                  <input
-                                    type="password"
-                                    value={manualTokenText}
-                                    onChange={(e) => setManualTokenText(e.target.value)}
-                                    placeholder="eyJ0eXAiOiJKV1QiLCJhbGci..."
-                                    className="flex-1 px-2.5 py-1.5 text-xs font-mono border border-[#8a8886] rounded focus:outline-none focus:border-[#008272]"
-                                  />
-                                  <button
-                                    onClick={handleApplyManualToken}
-                                    className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded transition cursor-pointer"
-                                  >
-                                    Apply
-                                  </button>
-                                </div>
-                              </div>
-                            )}
+                      <div>
+                        <label className="block text-[11px] font-semibold text-[#323130] mb-1">
+                          Application (Client) ID
+                        </label>
+                        <input
+                          type="text"
+                          value={provisionReq.client_id}
+                          onChange={(e) => setProvisionReq({ ...provisionReq, client_id: e.target.value })}
+                          className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none"
+                          placeholder="fbdd0ef6-296b-48a0-b07b-b23d6a2ad44b"
+                        />
+                      </div>
 
-                            {fabricSignInError && !showManualTokenInput && (
-                              <p className="text-[11px] text-amber-600 font-medium flex items-center gap-1">
-                                <AlertCircle className="w-3 h-3 flex-shrink-0" /> Token not available from popup — paste your token above or click "Complete Destination Step →" to proceed via backend.
-                              </p>
-                            )}
-                            <p className="text-[10px] text-gray-400 italic">
-                              Sign-in is optional. Click "Complete Destination Step →" to create the workspace directly.
-                            </p>
-                          </div>
-                        )}
+                      <div>
+                        <label className="block text-[11px] font-semibold text-[#323130] mb-1">
+                          Client Secret
+                        </label>
+                        <input
+                          type="password"
+                          value={provisionReq.client_secret}
+                          onChange={(e) => setProvisionReq({ ...provisionReq, client_secret: e.target.value })}
+                          className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none"
+                          placeholder="Enter Service Principal secret"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-[#323130] mb-1">
+                          Admin User Object ID (Azure AD GUID)
+                        </label>
+                        <input
+                          type="text"
+                          value={provisionReq.user_object_id || ''}
+                          onChange={(e) => setProvisionReq({ ...provisionReq, user_object_id: e.target.value })}
+                          className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none"
+                          placeholder="58f505c6-d389-468b-9457-cf50c4a45493"
+                        />
                       </div>
                     </div>
 
@@ -1202,49 +914,112 @@ export const DataIngestionApp: React.FC = () => {
                           <label className="block text-[11px] font-semibold text-[#323130]">
                             Target Workspace
                           </label>
-                          {availableWorkspaces.length > 0 && (
+                          <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => setUseCustomWorkspace(!useCustomWorkspace)}
-                              className="text-[10px] text-[#008272] hover:underline cursor-pointer"
+                              onClick={() => fetchUserWorkspaces(false)}
+                              disabled={loadingWorkspaces}
+                              className="text-[10px] font-medium text-[#008272] hover:text-[#005a50] flex items-center gap-1 focus:outline-none disabled:opacity-50"
+                              title="Scan workspaces where you have Admin / Member access"
                             >
-                              {useCustomWorkspace ? 'Select from my workspaces' : '+ Enter custom name'}
+                              <RefreshCw className={`w-3 h-3 ${loadingWorkspaces ? 'animate-spin' : ''}`} />
+                              {loadingWorkspaces ? 'Scanning...' : 'Scan Workspaces'}
                             </button>
-                          )}
+                            <span className="text-gray-300">|</span>
+                            {workspaceMode === 'existing' ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setWorkspaceMode('new');
+                                  setProvisionReq((prev) => ({
+                                    ...prev,
+                                    workspace_name: prev.workspace_name === 'Data_Migration_Workspace' ? 'Data_Migration_Workspace' : '',
+                                  }));
+                                }}
+                                className="text-[10px] font-medium text-[#008272] hover:underline flex items-center gap-1 focus:outline-none"
+                              >
+                                <Plus className="w-3 h-3" /> Add Workspace
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setWorkspaceMode('existing')}
+                                className="text-[10px] font-medium text-[#008272] hover:underline focus:outline-none"
+                              >
+                                Choose Existing
+                              </button>
+                            )}
+                          </div>
                         </div>
 
-                        {availableWorkspaces.length > 0 && !useCustomWorkspace ? (
-                          <select
-                            value={provisionReq.workspace_name}
-                            onChange={(e) => {
-                              if (e.target.value === '__custom__') {
-                                setUseCustomWorkspace(true);
-                              } else {
-                                setProvisionReq({ ...provisionReq, workspace_name: e.target.value });
-                              }
-                            }}
-                            className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none font-semibold text-[#201f1e]"
-                          >
-                            {availableWorkspaces.map((ws) => (
-                              <option key={ws.id} value={ws.displayName}>
-                                {ws.displayName} (Workspace)
-                              </option>
-                            ))}
-                            <option value="__custom__">+ Enter custom / new workspace...</option>
-                          </select>
+                        {workspaceMode === 'existing' ? (
+                          <div className="space-y-1">
+                            <div className="relative">
+                              <select
+                                value={selectedWorkspaceId || provisionReq.workspace_name}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val === '__CREATE_NEW__') {
+                                    setWorkspaceMode('new');
+                                    return;
+                                  }
+                                  const found = userWorkspaces.find((w) => w.id === val || w.displayName === val);
+                                  if (found) {
+                                    setSelectedWorkspaceId(found.id);
+                                    setProvisionReq((prev) => ({
+                                      ...prev,
+                                      workspace_name: found.displayName,
+                                      capacity_id: found.capacityId || prev.capacity_id,
+                                    }));
+                                  } else {
+                                    setProvisionReq((prev) => ({ ...prev, workspace_name: val }));
+                                  }
+                                }}
+                                className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none appearance-none font-medium"
+                              >
+                                {userWorkspaces.length === 0 ? (
+                                  <option value={provisionReq.workspace_name}>
+                                    {provisionReq.workspace_name} (Click "Scan Workspaces" to load list)
+                                  </option>
+                                ) : (
+                                  userWorkspaces.map((ws) => (
+                                    <option key={ws.id} value={ws.id}>
+                                      {ws.displayName} — [{ws.userRole}]
+                                    </option>
+                                  ))
+                                )}
+                                <option value="__CREATE_NEW__">➕ + Add New Workspace...</option>
+                              </select>
+                              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
+                                <ChevronRight className="w-3.5 h-3.5 rotate-90" />
+                              </div>
+                            </div>
+                            {userWorkspaces.length > 0 && selectedWorkspaceId && (
+                              <div className="flex items-center justify-between text-[10px] text-gray-500 pt-0.5">
+                                <span>
+                                  Workspace ID: <code className="bg-gray-100 px-1 py-0.5 rounded text-[#323130]">{selectedWorkspaceId}</code>
+                                </span>
+                                {userWorkspaces.find((w) => w.id === selectedWorkspaceId)?.userRole && (
+                                  <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-semibold text-[9px]">
+                                    {userWorkspaces.find((w) => w.id === selectedWorkspaceId)?.userRole} Access
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         ) : (
-                          <input
-                            type="text"
-                            value={provisionReq.workspace_name}
-                            onChange={(e) => setProvisionReq({ ...provisionReq, workspace_name: e.target.value })}
-                            className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none font-semibold text-[#201f1e]"
-                            placeholder="Enter workspace name (e.g. test)..."
-                          />
-                        )}
-                        {loadingWorkspaces && (
-                          <p className="text-[10px] text-[#605e5c] mt-0.5 flex items-center gap-1">
-                            <RefreshCw className="w-2.5 h-2.5 animate-spin text-[#008272]" /> Loading your workspaces...
-                          </p>
+                          <div className="space-y-1">
+                            <input
+                              type="text"
+                              value={provisionReq.workspace_name}
+                              onChange={(e) => setProvisionReq({ ...provisionReq, workspace_name: e.target.value })}
+                              className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none font-medium"
+                              placeholder="Enter new workspace name (e.g. My_Fabric_Workspace)"
+                            />
+                            <p className="text-[10px] text-amber-700">
+                              Will create a new Fabric workspace and grant Admin permissions.
+                            </p>
+                          </div>
                         )}
                       </div>
 
@@ -1257,7 +1032,6 @@ export const DataIngestionApp: React.FC = () => {
                           value={provisionReq.capacity_id}
                           onChange={(e) => setProvisionReq({ ...provisionReq, capacity_id: e.target.value })}
                           className="w-full text-xs h-9 px-3 bg-white border border-[#8a8886] focus:border-[#008272] rounded focus:outline-none"
-                          placeholder="Optional Fabric Capacity ID"
                         />
                       </div>
 
@@ -1295,22 +1069,14 @@ export const DataIngestionApp: React.FC = () => {
                         <p className="font-bold flex items-center gap-1.5 text-xs">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" /> {provisionResult.message}
                         </p>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={handleTestTarget}
-                            disabled={testingTarget}
-                            className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 text-[11px] font-bold rounded border border-emerald-300 transition flex items-center gap-1 cursor-pointer"
-                          >
-                            {testingTarget ? <RefreshCw className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3 text-[#008272]" />}
-                            Test Warehouse Endpoint
-                          </button>
-                          <button
-                            onClick={() => setActiveTab('source')}
-                            className="px-3 py-1 bg-[#008272] hover:bg-[#006e60] text-white text-[11px] font-bold rounded shadow-xs transition flex items-center gap-1 cursor-pointer"
-                          >
-                            Next: Connect Source Database &rarr;
-                          </button>
-                        </div>
+                        <button
+                          onClick={handleTestTarget}
+                          disabled={testingTarget}
+                          className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-800 text-[11px] font-bold rounded border border-emerald-300 transition flex items-center gap-1 cursor-pointer"
+                        >
+                          {testingTarget ? <RefreshCw className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3 text-[#008272]" />}
+                          Test Warehouse Endpoint
+                        </button>
                       </div>
                       <p className="text-[11px] text-[#605e5c]">
                         Workspace ID: <span className="font-mono text-[#201f1e]">{provisionResult.workspace_id}</span> | Warehouse:{' '}
@@ -1328,7 +1094,7 @@ export const DataIngestionApp: React.FC = () => {
               </div>
             )}
 
-            {/* TAB 2: SELECT SOURCE */}
+            {/* TAB 2: UPLOAD SOURCE (DECREASED WIDTH & INCREASED HEIGHT) */}
             {activeTab === 'source' && (
               <div className="space-y-4 animate-in fade-in-50 duration-200 max-w-3xl w-full">
                 {/* Source Cards */}
@@ -1385,7 +1151,7 @@ export const DataIngestionApp: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Connection Details Form */}
+                {/* Connection Details Form with Increased Height */}
                 <div className="bg-white border border-[#e1dfdd] rounded-lg p-6 shadow-2xs space-y-4 min-h-[320px]">
                   <div className="flex items-center justify-between pb-2 border-b border-[#e1dfdd]">
                     <h4 className="text-xs font-bold text-[#201f1e] uppercase tracking-wider">
@@ -1482,7 +1248,7 @@ export const DataIngestionApp: React.FC = () => {
               </div>
             )}
 
-            {/* TAB 3: SELECT & CONFIGURE TABLES */}
+            {/* TAB 3: SELECT & CONFIGURE TABLES (FULL WIDTH GRID) */}
             {activeTab === 'tables' && (
               <div className="space-y-3 animate-in fade-in-50 duration-200 w-full">
                 <div className="bg-white border border-[#e1dfdd] rounded-lg p-4 shadow-2xs space-y-3 w-full">
@@ -1490,7 +1256,7 @@ export const DataIngestionApp: React.FC = () => {
                     <div>
                       <h3 className="text-xs font-bold text-[#201f1e] uppercase tracking-wider">Discovered Source Tables</h3>
                       <p className="text-[11px] text-[#605e5c]">
-                        Configure the <strong>Incremental Strategy</strong> (dual date column filter) and target table names for project <strong>{projectName}</strong>.
+                        Configure the <strong>Incremental Strategy</strong> (dual date column filter) and target table names.
                       </p>
                     </div>
 
@@ -1562,6 +1328,7 @@ export const DataIngestionApp: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Clean Enterprise Data Table */}
                   {discoveredTables.length === 0 ? (
                     <div className="py-8 text-center">
                       <p className="text-xs font-semibold text-[#605e5c]">No tables discovered yet</p>
@@ -1751,45 +1518,36 @@ export const DataIngestionApp: React.FC = () => {
               </div>
             )}
 
-            {/* TAB 4: REVIEW & SYNC */}
+            {/* TAB 4: REVIEW & SYNC (EXTENDED WIDTH) */}
             {activeTab === 'review' && (
               <div className="space-y-3 animate-in fade-in-50 duration-200 max-w-6xl w-full">
                 <div className="bg-white border border-[#e1dfdd] rounded-lg p-6 shadow-2xs space-y-4">
                   <div>
-                    <h3 className="text-sm font-bold text-[#201f1e]">Review Project Configuration</h3>
+                    <h3 className="text-sm font-bold text-[#201f1e]">Review Configuration</h3>
                     <p className="text-[11px] text-[#605e5c]">
-                      Verify project parameters, source, destination, and selected tables before execution.
+                      Verify migration parameters before synchronizing to Microsoft Fabric.
                     </p>
-                  </div>
-
-                  <div className="p-3.5 rounded border border-[#e1dfdd] bg-[#f8f9fa] space-y-1">
-                    <p className="font-bold text-[#201f1e] text-xs">Project Name: <span className="text-[#008272]">{projectName}</span></p>
-                    {projectDescription && (
-                      <p className="text-[11px] text-[#605e5c]">Description: {projectDescription}</p>
-                    )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                     <div className="p-3.5 rounded border border-[#e1dfdd] bg-[#f8f9fa] space-y-1.5">
                       <p className="font-bold text-[#201f1e] uppercase tracking-wider text-[10px]">Source Environment</p>
-                      <p className="text-[#605e5c]">Database Type: <strong className="text-[#201f1e] uppercase">{selectedSourceType}</strong></p>
+                      <p className="text-[#605e5c]">Database Type: <strong className="text-[#201f1e]">Azure SQL Database</strong></p>
                       <p className="text-[#605e5c]">Server: <span className="font-mono text-[#201f1e]">{sourceCreds.server}</span></p>
                       <p className="text-[#605e5c]">Database: <span className="font-mono text-[#201f1e]">{sourceCreds.database}</span></p>
-                      <p className="text-[#605e5c]">Username: <span className="font-mono text-[#201f1e]">{sourceCreds.username}</span></p>
                     </div>
 
                     <div className="p-3.5 rounded border border-[#e1dfdd] bg-[#f8f9fa] space-y-1.5">
                       <p className="font-bold text-[#201f1e] uppercase tracking-wider text-[10px]">Target Environment (Fabric)</p>
-                      <p className="text-[#605e5c]">Warehouse: <strong className="text-[#008272]">{targetCreds.database || provisionReq.warehouse_name}</strong></p>
-                      <p className="text-[#605e5c]">Lakehouse: <strong className="text-[#008272]">{provisionReq.lakehouse_name}</strong></p>
-                      <p className="text-[#605e5c]">Endpoint: <span className="font-mono text-[#201f1e] text-[11px] truncate block">{targetCreds.server || 'Auto-assigned'}</span></p>
-                      <p className="text-[#605e5c]">Authentication: <strong className="text-[#201f1e]">Fabric User Session</strong></p>
+                      <p className="text-[#605e5c]">Warehouse: <strong className="text-[#008272]">{targetCreds.database}</strong></p>
+                      <p className="text-[#605e5c]">Endpoint: <span className="font-mono text-[#201f1e] text-[11px] truncate block">{targetCreds.server}</span></p>
+                      <p className="text-[#605e5c]">Authentication: <strong className="text-[#201f1e]">Service Principal (OAuth2)</strong></p>
                     </div>
                   </div>
 
                   <div className="space-y-2.5">
                     <h4 className="text-[11px] font-bold text-[#201f1e] uppercase tracking-wider">
-                      Tables Configured for this Project ({selectedCount})
+                      Tables to be Synchronized ({selectedCount})
                     </h4>
 
                     <div className="border border-[#e1dfdd] rounded overflow-hidden">
@@ -1829,18 +1587,12 @@ export const DataIngestionApp: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="pt-2 flex items-center justify-between">
+                  <div className="pt-2 flex items-center justify-start">
                     <button
                       onClick={() => setActiveTab('tables')}
                       className="px-3.5 py-1.5 text-xs font-semibold text-[#323130] bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] transition cursor-pointer"
                     >
                       &larr; Modify Tables
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('jobs')}
-                      className="px-4 py-1.5 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition cursor-pointer"
-                    >
-                      Go to Execution Dashboard &rarr;
                     </button>
                   </div>
                 </div>
@@ -1853,7 +1605,7 @@ export const DataIngestionApp: React.FC = () => {
                 {/* Metric Tiles */}
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 w-full">
                   <div className="bg-white border border-[#e1dfdd] rounded p-3 shadow-2xs">
-                    <p className="text-[10px] font-bold text-[#605e5c] uppercase">Project Sync Jobs</p>
+                    <p className="text-[10px] font-bold text-[#605e5c] uppercase">Total Configured Jobs</p>
                     <p className="text-lg font-bold text-[#201f1e] mt-0.5">{jobs.length}</p>
                   </div>
                   <div className="bg-white border border-[#e1dfdd] rounded p-3 shadow-2xs">
@@ -1865,7 +1617,7 @@ export const DataIngestionApp: React.FC = () => {
                     <p className="text-lg font-bold text-[#0078d4] mt-0.5">{fullCount}</p>
                   </div>
                   <div className="bg-white border border-[#e1dfdd] rounded p-3 shadow-2xs">
-                    <p className="text-[10px] font-bold text-[#605e5c] uppercase">Transferred Rows</p>
+                    <p className="text-[10px] font-bold text-[#605e5c] uppercase">Total Transferred Rows</p>
                     <p className="text-lg font-bold text-purple-700 mt-0.5">{totalRowsLoaded.toLocaleString()}</p>
                   </div>
                 </div>
@@ -1874,11 +1626,9 @@ export const DataIngestionApp: React.FC = () => {
                 <div className="bg-white border border-[#e1dfdd] rounded-lg p-4 shadow-2xs space-y-3 w-full">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-[#e1dfdd]">
                     <div>
-                      <h3 className="text-xs font-bold text-[#201f1e] uppercase tracking-wider">
-                        Execution Jobs — {projectName}
-                      </h3>
+                      <h3 className="text-xs font-bold text-[#201f1e] uppercase tracking-wider">Execution Jobs</h3>
                       <p className="text-[11px] text-[#605e5c]">
-                        Incremental watermark and MD5 hash key merge synchronization into Fabric Target.
+                        Incremental watermark and MD5 hash key merge synchronization jobs.
                       </p>
                     </div>
 
@@ -1892,7 +1642,7 @@ export const DataIngestionApp: React.FC = () => {
                       </button>
 
                       <button
-                        onClick={() => fetchProjectJobs(activeProject?.id)}
+                        onClick={fetchConfiguredJobs}
                         disabled={loadingJobs}
                         className="p-1 bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] text-[#323130] cursor-pointer"
                         title="Refresh"
@@ -1920,7 +1670,7 @@ export const DataIngestionApp: React.FC = () => {
 
                   {jobs.length === 0 ? (
                     <div className="py-8 text-center">
-                      <p className="text-xs font-semibold text-[#605e5c]">No jobs configured for this project yet</p>
+                      <p className="text-xs font-semibold text-[#605e5c]">No jobs configured yet</p>
                       <button
                         onClick={() => setActiveTab('tables')}
                         className="mt-2 px-3 py-1 bg-[#008272] text-white rounded text-xs font-semibold cursor-pointer"
@@ -2072,74 +1822,65 @@ export const DataIngestionApp: React.FC = () => {
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
-              if (viewMode === 'wizard') {
-                setViewMode('projects');
-                fetchProjects();
-              } else {
-                fetchProjects();
-              }
+              setActiveTab('provision');
+              setSelectedTables({});
+              setTableConfigs({});
             }}
             className="px-3.5 py-1 text-xs font-semibold text-[#323130] bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] transition cursor-pointer"
           >
-            {viewMode === 'wizard' ? 'Exit to Projects' : 'Refresh'}
+            Reset Wizard
           </button>
 
-          {viewMode === 'wizard' && activeTab === 'provision' && (
+          {activeTab === 'provision' && (
             <button
-              onClick={() => {
-                if (provisionResult) {
-                  setActiveTab('source');
-                } else {
-                  handleAutoProvision();
-                }
-              }}
+              onClick={handleAutoProvision}
               disabled={provisioning}
               className="px-4 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               {provisioning ? <RefreshCw className="w-3 h-3 animate-spin" /> : null}
-              {provisionResult ? 'Proceed to Source Database \u2192' : 'Complete Destination Step \u2192'}
+              Complete Step &rarr;
             </button>
           )}
 
-          {viewMode === 'wizard' && activeTab === 'source' && (
+          {activeTab === 'source' && (
             <button
               onClick={handleDiscoverTables}
               disabled={discovering || !sourceCreds.password}
               className="px-4 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               {discovering ? <RefreshCw className="w-3 h-3 animate-spin" /> : null}
-              Inspect Source Tables &rarr;
+              Complete Step &rarr;
             </button>
           )}
 
-          {viewMode === 'wizard' && activeTab === 'tables' && (
+          {activeTab === 'tables' && (
             <button
               onClick={handleSaveAndConfigureJobs}
               disabled={loadingJobs || selectedCount === 0}
               className="px-4 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               {loadingJobs ? <RefreshCw className="w-3 h-3 animate-spin" /> : null}
-              Save Project &amp; Configure ({selectedCount}) Tables &rarr;
+              Complete Step &rarr;
             </button>
           )}
 
-          {viewMode === 'wizard' && activeTab === 'review' && (
+          {activeTab === 'review' && (
             <button
               onClick={() => setActiveTab('jobs')}
               className="px-4 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
             >
-              Open Project Dashboard &rarr;
+              Complete Step &rarr;
             </button>
           )}
 
-          {viewMode === 'wizard' && activeTab === 'jobs' && (
+          {activeTab === 'jobs' && (
             <button
               onClick={handleRunAllJobs}
               disabled={runningAll || jobs.length === 0}
               className="px-4 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               {runningAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-white" />}
-              Execute Project Jobs
+              Execute All Jobs
             </button>
           )}
         </div>

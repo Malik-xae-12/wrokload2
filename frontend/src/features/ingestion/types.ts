@@ -1,5 +1,8 @@
 export interface ProvisionWorkspaceRequest {
-  access_token: string;
+  tenant_id?: string;
+  client_id?: string;
+  client_secret?: string;
+  access_token?: string;
   workspace_name: string;
   capacity_id?: string;
   lakehouse_name: string;
@@ -19,6 +22,22 @@ export interface ProvisionWorkspaceResponse {
   sql_endpoint?: string;
   capacity_assigned: boolean;
   admin_assigned?: boolean;
+}
+
+export interface UserWorkspaceInfo {
+  id: string;
+  displayName: string;
+  description?: string;
+  capacityId?: string;
+  userRole: string;
+}
+
+export interface ListUserWorkspacesRequest {
+  tenant_id: string;
+  client_id: string;
+  client_secret: string;
+  user_object_id: string;
+  allowed_roles?: string[];
 }
 
 export interface SourceCredentials {

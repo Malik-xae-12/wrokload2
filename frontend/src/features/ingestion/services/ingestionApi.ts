@@ -13,6 +13,8 @@ import {
   MigrationProjectCreate,
   MigrationProjectUpdate,
   MigrationProjectRead,
+  ListUserWorkspacesRequest,
+  UserWorkspaceInfo,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -76,6 +78,19 @@ export const ingestionApi = {
   // ===========================================================================
   // PROVISIONING & CONNECTION TESTS
   // ===========================================================================
+
+  async listUserWorkspaces(req: ListUserWorkspacesRequest): Promise<UserWorkspaceInfo[]> {
+    const res = await fetch(`${API_BASE}/fabric/ingestion/workspaces/user-workspaces`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Failed to fetch user workspaces');
+    }
+    return res.json();
+  },
 
   async provisionWorkspace(req: ProvisionWorkspaceRequest): Promise<ProvisionWorkspaceResponse> {
     const res = await fetch(`${API_BASE}/fabric/ingestion/provision-workspace`, {

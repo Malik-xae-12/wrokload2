@@ -19,12 +19,15 @@ from app.modules.fabric.schema_ingestion import (
     MigrationProjectCreate,
     MigrationProjectUpdate,
     MigrationProjectRead,
+    ListUserWorkspacesRequest,
+    UserWorkspaceInfo,
 )
 from app.modules.fabric.services import ingestion_service as svc
 from app.modules.fabric.services.fabric_provisioner import (
     ProvisionWorkspaceRequest,
     ProvisionWorkspaceResponse,
     auto_provision_fabric_environment,
+    list_user_workspaces,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,26 @@ router = APIRouter(prefix="/fabric/ingestion", tags=["ingestion"])
 # ==============================================================================
 # PROVISIONING & CONNECTION ENDPOINTS
 # ==============================================================================
+
+@router.post("/workspaces/user-workspaces", response_model=list[UserWorkspaceInfo])
+def get_user_workspaces_endpoint(req: ListUserWorkspacesRequest):
+    """Retrieve all Fabric Workspaces where the specified User Object ID has Admin, Member, or Contributor access."""
+    try:
+        workspaces = list_user_workspaces(
+            tenant_id=req.tenant_id,
+            client_id=req.client_id,
+            client_secret=req.client_secret,
+            user_object_id=req.user_object_id,
+            allowed_roles=req.allowed_roles,
+        )
+        return workspaces
+    except Exception as e:
+        logger.exception("Error listing user workspaces")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to list workspaces for user: {str(e)}",
+        )
+
 
 @router.post("/provision-workspace", response_model=ProvisionWorkspaceResponse)
 def provision_workspace_endpoint(req: ProvisionWorkspaceRequest):
