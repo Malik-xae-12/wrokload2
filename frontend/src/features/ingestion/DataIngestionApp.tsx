@@ -200,6 +200,48 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
+  // Ensure a MigrationProject row exists in SQLite and return its ID
+  const ensureProjectExists = async (): Promise<string> => {
+    if (currentProjectId) {
+      try {
+        await ingestionApi.updateProject(currentProjectId, {
+          name: projectName,
+          source_server: sourceCreds.server,
+          source_database: sourceCreds.database,
+          source_username: sourceCreds.username,
+          source_port: sourceCreds.port,
+          target_workspace_name: provisionReq.workspace_name,
+          target_lakehouse_name: provisionReq.lakehouse_name,
+          target_warehouse_name: provisionReq.warehouse_name,
+          target_server: targetCreds.server || provisionResult?.sql_endpoint,
+          target_database: targetCreds.database || provisionReq.warehouse_name,
+        });
+      } catch (err) {
+        console.warn('Project update notice:', err);
+      }
+      return currentProjectId;
+    }
+
+    // Create new project in SQLite
+    const newProj = await ingestionApi.createProject({
+      name: projectName || `Project_${new Date().toISOString().slice(0, 10)}`,
+      source_type: selectedSourceType || 'azure_sql',
+      source_server: sourceCreds.server,
+      source_database: sourceCreds.database,
+      source_username: sourceCreds.username,
+      source_port: sourceCreds.port || 1433,
+      target_workspace_name: provisionReq.workspace_name,
+      target_lakehouse_name: provisionReq.lakehouse_name,
+      target_warehouse_name: provisionReq.warehouse_name,
+      target_server: targetCreds.server || provisionResult?.sql_endpoint,
+      target_database: targetCreds.database || provisionReq.warehouse_name,
+      auth_mode: 'service_principal',
+    });
+    setCurrentProjectId(newProj.id);
+    await fetchProjects();
+    return newProj.id;
+  };
+
   useEffect(() => {
     fetchProjects();
     fetchConfiguredJobs(null);
@@ -281,6 +323,18 @@ export const DataIngestionApp: React.FC = () => {
     }
   };
 
+  // Complete project and navigate to projects table
+  const handleCompleteProject = async () => {
+    try {
+      await ensureProjectExists();
+      await fetchProjects();
+      showToast(`Migration project '${projectName}' completed successfully!`, 'success');
+      setViewMode('projects');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to complete project', 'error');
+    }
+  };
+
   // Auto-Provision Workspace & Lakehouse
   const handleAutoProvision = async () => {
     if (!provisionReq.client_secret || !provisionReq.client_id || !provisionReq.tenant_id) {
@@ -301,6 +355,7 @@ export const DataIngestionApp: React.FC = () => {
           tenant_id: provisionReq.tenant_id || prev.tenant_id,
         }));
         showToast(res.message, 'success');
+        await ensureProjectExists();
         setActiveTab('source');
       } else {
         showToast(res.message || 'Provisioning failed', 'error');
@@ -438,34 +493,38 @@ export const DataIngestionApp: React.FC = () => {
       return;
     }
 
-    const payloadJobs: TableJobConfig[] = selectedList.map((t) => {
-      const cfg = tableConfigs[t.full_name] || {
-        loadType: t.suggested_load_type,
-        incrementalType: t.incremental_type || 'FULL',
-        watermarkColumn: t.suggested_watermark_column,
-        createdColumn: t.created_column,
-        updatedColumn: t.updated_column,
-        targetTable: t.table_name,
-      };
-      return {
-        source_schema: t.schema_name,
-        source_table: t.table_name,
-        target_schema: 'dbo',
-        target_table: cfg.targetTable || t.table_name,
-        load_type: cfg.incrementalType === 'FULL' ? 'FULL' : 'INCREMENTAL',
-        incremental_type: cfg.incrementalType,
-        watermark_column: cfg.incrementalType === 'FULL' ? null : (cfg.watermarkColumn || cfg.updatedColumn || cfg.createdColumn || null),
-        created_column: cfg.createdColumn || t.created_column,
-        updated_column: cfg.updatedColumn || t.updated_column,
-        is_enabled: true,
-      };
-    });
-
     try {
       setLoadingJobs(true);
-      await ingestionApi.configureJobs(sourceCreds, targetCreds, payloadJobs);
-      showToast(`Configured ${payloadJobs.length} tables successfully`, 'success');
-      await fetchConfiguredJobs();
+      const pid = await ensureProjectExists();
+
+      const payloadJobs: TableJobConfig[] = selectedList.map((t) => {
+        const cfg = tableConfigs[t.full_name] || {
+          loadType: t.suggested_load_type,
+          incrementalType: t.incremental_type || 'FULL',
+          watermarkColumn: t.suggested_watermark_column,
+          createdColumn: t.created_column,
+          updatedColumn: t.updated_column,
+          targetTable: t.table_name,
+        };
+        return {
+          project_id: pid,
+          source_schema: t.schema_name,
+          source_table: t.table_name,
+          target_schema: 'dbo',
+          target_table: cfg.targetTable || t.table_name,
+          load_type: cfg.incrementalType === 'FULL' ? 'FULL' : 'INCREMENTAL',
+          incremental_type: cfg.incrementalType,
+          watermark_column: cfg.incrementalType === 'FULL' ? null : (cfg.watermarkColumn || cfg.updatedColumn || cfg.createdColumn || null),
+          created_column: cfg.createdColumn || t.created_column,
+          updated_column: cfg.updatedColumn || t.updated_column,
+          is_enabled: true,
+        };
+      });
+
+      await ingestionApi.configureJobs(sourceCreds, targetCreds, payloadJobs, pid);
+      showToast(`Configured ${payloadJobs.length} tables successfully for ${projectName}`, 'success');
+      await fetchConfiguredJobs(pid);
+      await fetchProjects();
       setActiveTab('review');
     } catch (err: any) {
       showToast(err.message || 'Failed to save configurations', 'error');
@@ -488,6 +547,8 @@ export const DataIngestionApp: React.FC = () => {
     try {
       setRunningAll(true);
       showToast('Executing synchronization for all tables into Fabric Warehouse...', 'info');
+      const pid = await ensureProjectExists();
+
       const activeTargetCreds: FabricTargetCredentials = {
         ...targetCreds,
         client_secret: tSecret,
@@ -496,7 +557,7 @@ export const DataIngestionApp: React.FC = () => {
         server: targetCreds.server || provisionResult?.sql_endpoint || 'ptrf35b4be5udprnukus7ggpeq-fd5dtvvoglfe7bzgpupk4nn5cm.datawarehouse.fabric.microsoft.com',
         database: targetCreds.database || provisionReq.warehouse_name || 'WH_METADATA',
       };
-      const res = await ingestionApi.runAllJobs(sourceCreds, activeTargetCreds);
+      const res = await ingestionApi.runAllJobs(sourceCreds, activeTargetCreds, pid);
       
       const failed = res.results.filter((r) => r.status === 'FAILED');
       const totalTransferred = res.results.reduce((sum, r) => sum + (r.rows_transferred || 0), 0);
@@ -506,10 +567,11 @@ export const DataIngestionApp: React.FC = () => {
       } else {
         showToast(`Sync completed successfully! Transferred ${totalTransferred} rows into ${activeTargetCreds.database}.`, 'success');
       }
-      await fetchConfiguredJobs();
+      await fetchConfiguredJobs(pid);
+      await fetchProjects();
     } catch (err: any) {
       showToast(err.message || 'Execution failed', 'error');
-      await fetchConfiguredJobs();
+      if (currentProjectId) await fetchConfiguredJobs(currentProjectId);
     } finally {
       setRunningAll(false);
     }
@@ -1739,6 +1801,14 @@ export const DataIngestionApp: React.FC = () => {
                           </>
                         )}
                       </button>
+
+                      <button
+                        onClick={handleCompleteProject}
+                        className="px-3.5 py-1 text-xs font-bold text-white bg-[#107c41] hover:bg-[#0b5a2f] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+                        title="Finish migration and view project in Projects list"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Complete Project
+                      </button>
                     </div>
                   </div>
 
@@ -1948,14 +2018,23 @@ export const DataIngestionApp: React.FC = () => {
           )}
 
           {activeTab === 'jobs' && (
-            <button
-              onClick={handleRunAllJobs}
-              disabled={runningAll || jobs.length === 0}
-              className="px-4 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-            >
-              {runningAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-white" />}
-              Execute All Jobs
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRunAllJobs}
+                disabled={runningAll || jobs.length === 0}
+                className="px-3.5 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {runningAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-white" />}
+                Execute All Jobs
+              </button>
+              <button
+                onClick={handleCompleteProject}
+                className="px-4 py-1 text-xs font-bold text-white bg-[#107c41] hover:bg-[#0b5a2f] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Complete Project &rarr;
+              </button>
+            </div>
           )}
         </div>
       </footer>
