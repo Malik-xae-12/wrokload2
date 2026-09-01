@@ -44,16 +44,40 @@ export function App({ history, workloadClient }: AppProps) {
                 </div>
             </Route>
             <Switch>
-                {/* Routings for the Hello World Item Editor */}
+                {/* Routings for any Workload Item Editor */}
                 <Route path="/HelloWorldItem-editor/:itemObjectId">
                     <HelloWorldItemEditor
                         workloadClient={workloadClient}
                         data-testid="HelloWorldItem-editor"
                     />
                 </Route>
+                <Route path="/DataIngestion-editor/:itemObjectId">
+                    <HelloWorldItemEditor
+                        workloadClient={workloadClient}
+                        data-testid="DataIngestion-editor"
+                    />
+                </Route>
+                <Route path="/DataIngestionPipeline-editor/:itemObjectId">
+                    <HelloWorldItemEditor
+                        workloadClient={workloadClient}
+                        data-testid="DataIngestionPipeline-editor"
+                    />
+                </Route>
+                <Route path="/:itemType-editor/:itemObjectId">
+                    <HelloWorldItemEditor
+                        workloadClient={workloadClient}
+                    />
+                </Route>
 
                 {/* Conditionally loaded playground routes (only in development) */}
                 <ConditionalPlaygroundRoutes workloadClient={workloadClient} />
+
+                {/* Fallback to Solution Accelerator UI */}
+                <Route path="*">
+                    <HelloWorldItemEditor
+                        workloadClient={workloadClient}
+                    />
+                </Route>
             </Switch>
         </Router>
     );

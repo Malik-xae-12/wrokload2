@@ -96,11 +96,24 @@ export function HelloWorldItemEditor(props: PageProps) {
     return () => window.removeEventListener("message", handleMessage);
   }, [workloadClient]);
 
+  const getUiUrl = () => {
+    // 1. If explicit environment FRONTEND_URL is set, use it
+    if (process.env.FRONTEND_URL && !process.env.FRONTEND_URL.includes("localhost:60006")) {
+      return process.env.FRONTEND_URL;
+    }
+    // 2. If running locally in browser
+    if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+      return "http://localhost:5173/";
+    }
+    // 3. Production Azure App Service fallback
+    return "https://fabric-solution-accelerator.azurewebsites.net/";
+  };
+
   return (
     <div style={{ width: '100%', height: 'calc(100vh - 40px)', minHeight: '800px', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <iframe
         ref={iframeRef}
-        src="http://localhost:5173/"
+        src={getUiUrl()}
         title="Fabric Solution Accelerator"
         allow="camera; microphone; geolocation; popups; popups-to-escape-sandbox"
         style={{

@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: frontend-deploy-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -24,13 +24,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.x'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
 
       - name: Install & Build
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: |
           cd frontend
-          npm install --no-audit --no-fund
+          npm ci --prefer-offline --no-audit --no-fund
           npm run build
           cp startup.sh dist/startup.sh
           cp server.js dist/server.js
@@ -63,9 +65,9 @@ jobs:
 
       - name: Deploy to Azure Web App
         id: deploy
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
           app-name: fabric-solution-accelerator
           slot-name: Production
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_UI }}
-          package: dist
+          package: dist
