@@ -29,27 +29,12 @@ import {
   TableSyncJobRead,
   SyncJobRunRead,
   IncrementalType,
+  MigrationProjectRead,
 } from './types';
-
-interface MigrationProject {
-  id: string;
-  name: string;
-  sourceServer: string;
-  sourceDatabase: string;
-  targetWorkspace: string;
-  targetWarehouse: string;
-  tableCount: number;
-  completedJobs: number;
-  totalJobs: number;
-  totalRows: number;
-  status: 'SUCCESS' | 'RUNNING' | 'FAILED' | 'IDLE';
-  lastRunAt: string | null;
-  createdAt: string;
-}
 
 export const DataIngestionApp: React.FC = () => {
   // Navigation: Projects List vs Wizard
-  const [viewMode, setViewMode] = useState<'projects' | 'wizard'>('wizard');
+  const [viewMode, setViewMode] = useState<'projects' | 'wizard'>('projects');
   const [activeTab, setActiveTab] = useState<'provision' | 'source' | 'tables' | 'review' | 'jobs'>('provision');
   const [selectedSourceType, setSelectedSourceType] = useState<'azure_sql' | 'synapse' | 'sql_server'>('azure_sql');
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -59,30 +44,17 @@ export const DataIngestionApp: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Projects State
-  const [projects, setProjects] = useState<MigrationProject[]>([
-    {
-      id: 'proj-1',
-      name: 'Azure SQL to Fabric Migration',
-      sourceServer: import.meta.env.VITE_DEFAULT_SOURCE_SERVER || 'uiapsqlserver.database.windows.net',
-      sourceDatabase: import.meta.env.VITE_DEFAULT_SOURCE_DATABASE || 'fabricaccelerator',
-      targetWorkspace: import.meta.env.VITE_DEFAULT_WORKSPACE_NAME || 'Data_Migration_Workspace',
-      targetWarehouse: import.meta.env.VITE_DEFAULT_WAREHOUSE_NAME || 'WH_METADATA',
-      tableCount: 3,
-      completedJobs: 3,
-      totalJobs: 3,
-      totalRows: 1420,
-      status: 'SUCCESS',
-      lastRunAt: '2026-08-26 21:55:00',
-      createdAt: '2026-08-26',
-    },
-  ]);
+  // Current Project Scoping State (Initialized empty from SQLite)
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string>('Azure SQL to Fabric Migration');
+  const [projects, setProjects] = useState<MigrationProjectRead[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState<boolean>(false);
   const [projectFilter, setProjectFilter] = useState('');
 
   // Service Principal & Auto-Provisioning State (Dynamically loaded from .env)
   const [provisionReq, setProvisionReq] = useState<ProvisionWorkspaceRequest>({
     tenant_id: import.meta.env.VITE_DEFAULT_TENANT_ID || '008502d6-3f79-46f0-ab37-9354e3fe80ff',
-    client_id: import.meta.env.VITE_DEFAULT_CLIENT_ID || '25ad11d7-5885-4f0e-8424-919bf02e04eb',
+    client_id: '25ad11d7-5885-4f0e-8424-919bf02e04eb',
     client_secret: import.meta.env.VITE_DEFAULT_CLIENT_SECRET || 'SWE8Q~EtZhXJAxLm_mVlLFBSI~It5ljFjID~kbvn',
     workspace_name: import.meta.env.VITE_DEFAULT_WORKSPACE_NAME || 'Data_Migration_Workspace',
     capacity_id: import.meta.env.VITE_DEFAULT_CAPACITY_ID || 'F17A64BA-8BA2-4933-9010-00CA3441CC0B',
@@ -157,9 +129,9 @@ export const DataIngestionApp: React.FC = () => {
   const [targetCreds, setTargetCreds] = useState<FabricTargetCredentials>({
     server: import.meta.env.VITE_DEFAULT_TARGET_SERVER || '',
     database: import.meta.env.VITE_DEFAULT_WAREHOUSE_NAME || 'WH_METADATA',
-    client_id: import.meta.env.VITE_DEFAULT_CLIENT_ID || '',
-    client_secret: import.meta.env.VITE_DEFAULT_CLIENT_SECRET || '',
-    tenant_id: import.meta.env.VITE_DEFAULT_TENANT_ID || '',
+    client_id: '25ad11d7-5885-4f0e-8424-919bf02e04eb',
+    client_secret: import.meta.env.VITE_DEFAULT_CLIENT_SECRET || 'SWE8Q~EtZhXJAxLm_mVlLFBSI~It5ljFjID~kbvn',
+    tenant_id: import.meta.env.VITE_DEFAULT_TENANT_ID || '008502d6-3f79-46f0-ab37-9354e3fe80ff',
     auth_mode: 'service_principal',
   });
 
@@ -201,36 +173,26 @@ export const DataIngestionApp: React.FC = () => {
   const [historyLogs, setHistoryLogs] = useState<SyncJobRunRead[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  useEffect(() => {
-    fetchConfiguredJobs();
-  }, []);
+  // Fetch all projects from SQLite database
+  const fetchProjects = async () => {
+    try {
+      setLoadingProjects(true);
+      const data = await ingestionApi.listProjects();
+      setProjects(data);
+    } catch (err: any) {
+      console.error('Failed to fetch projects from SQLite:', err);
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
 
-  const fetchConfiguredJobs = async () => {
+  // Fetch jobs for current project (or all jobs if no project specified)
+  const fetchConfiguredJobs = async (targetProjectId?: string | null) => {
+    const pid = targetProjectId !== undefined ? targetProjectId : currentProjectId;
     try {
       setLoadingJobs(true);
-      const data = await ingestionApi.listJobs();
+      const data = await ingestionApi.listJobs(pid || undefined);
       setJobs(data);
-      if (data && data.length > 0) {
-        const completed = data.filter((j) => j.last_run_status === 'SUCCESS').length;
-        const totalRows = data.reduce((sum, j) => sum + (j.last_run_rows || 0), 0);
-        setProjects((prev) => [
-          {
-            ...prev[0],
-            tableCount: data.length,
-            completedJobs: completed,
-            totalJobs: data.length,
-            totalRows: totalRows,
-            status: data.some((j) => j.last_run_status === 'RUNNING')
-              ? 'RUNNING'
-              : data.some((j) => j.last_run_status === 'FAILED')
-              ? 'FAILED'
-              : completed === data.length
-              ? 'SUCCESS'
-              : 'IDLE',
-            lastRunAt: data[0]?.last_run_at || prev[0].lastRunAt,
-          },
-        ]);
-      }
     } catch (err: any) {
       console.error('Failed to fetch jobs', err);
     } finally {
@@ -239,8 +201,85 @@ export const DataIngestionApp: React.FC = () => {
   };
 
   useEffect(() => {
+    fetchProjects();
+    fetchConfiguredJobs(null);
     fetchUserWorkspaces(true);
   }, []);
+
+  // Create a completely clean new project
+  const handleCreateNewProject = () => {
+    setCurrentProjectId(null);
+    setProjectName(`Project_${new Date().toISOString().slice(0, 10)}`);
+    setDiscoveredTables([]);
+    setSelectedTables({});
+    setTableConfigs({});
+    setJobs([]);
+    setHistoryLogs([]);
+    setSourceCreds((prev) => ({ ...prev, password: '' }));
+    setProvisionResult(null);
+    setWorkspaceMode('existing');
+    setActiveTab('provision');
+    setViewMode('wizard');
+  };
+
+  // Open an existing project from the projects list
+  const handleOpenProject = async (proj: MigrationProjectRead) => {
+    setCurrentProjectId(proj.id);
+    setProjectName(proj.name);
+    setProvisionReq((prev) => ({
+      ...prev,
+      workspace_name: proj.target_workspace_name || prev.workspace_name,
+      lakehouse_name: proj.target_lakehouse_name || prev.lakehouse_name,
+      warehouse_name: proj.target_warehouse_name || prev.warehouse_name,
+    }));
+    setSourceCreds((prev) => ({
+      ...prev,
+      server: proj.source_server || prev.server,
+      database: proj.source_database || prev.database,
+      username: proj.source_username || prev.username,
+      port: proj.source_port || prev.port,
+      password: '',
+    }));
+    setTargetCreds((prev) => ({
+      ...prev,
+      server: proj.target_server || prev.server,
+      database: proj.target_database || proj.target_warehouse_name || prev.database,
+    }));
+
+    setDiscoveredTables([]);
+    setSelectedTables({});
+    setTableConfigs({});
+
+    try {
+      setLoadingJobs(true);
+      const pJobs = await ingestionApi.listJobs(proj.id);
+      setJobs(pJobs);
+      setActiveTab(pJobs.length > 0 ? 'jobs' : 'provision');
+    } catch (err) {
+      console.error('Failed to load jobs for project', err);
+      setActiveTab('provision');
+    } finally {
+      setLoadingJobs(false);
+    }
+    setViewMode('wizard');
+  };
+
+  // Delete project and all its jobs
+  const handleDeleteProject = async (projId: string) => {
+    if (!confirm('Are you sure you want to delete this project and all its configured sync jobs?')) {
+      return;
+    }
+    try {
+      await ingestionApi.deleteProject(projId);
+      showToast('Project deleted successfully', 'success');
+      if (currentProjectId === projId) {
+        setCurrentProjectId(null);
+      }
+      await fetchProjects();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete project', 'error');
+    }
+  };
 
   // Auto-Provision Workspace & Lakehouse
   const handleAutoProvision = async () => {
@@ -625,7 +664,7 @@ export const DataIngestionApp: React.FC = () => {
             {viewMode === 'wizard' && (
               <>
                 <ChevronRight className="w-3 h-3 text-[#a19f9d]" />
-                <span className="font-semibold text-[#201f1e]">New code project</span>
+                <span className="font-semibold text-[#201f1e]">{projectName || 'New Project'}</span>
               </>
             )}
           </div>
@@ -634,17 +673,17 @@ export const DataIngestionApp: React.FC = () => {
         <div className="flex items-center gap-2">
           {viewMode === 'wizard' ? (
             <button
-              onClick={() => setViewMode('projects')}
+              onClick={() => {
+                fetchProjects();
+                setViewMode('projects');
+              }}
               className="px-3 py-1 text-xs font-semibold text-[#323130] bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] transition cursor-pointer"
             >
               View All Projects
             </button>
           ) : (
             <button
-              onClick={() => {
-                setViewMode('wizard');
-                setActiveTab('provision');
-              }}
+              onClick={handleCreateNewProject}
               className="px-3 py-1 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" /> New Code Project
@@ -675,10 +714,7 @@ export const DataIngestionApp: React.FC = () => {
               </div>
 
               <button
-                onClick={() => {
-                  setViewMode('wizard');
-                  setActiveTab('provision');
-                }}
+                onClick={handleCreateNewProject}
                 className="px-3.5 py-1.5 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition flex items-center gap-1.5 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" /> Create Project
@@ -703,71 +739,109 @@ export const DataIngestionApp: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#e1dfdd] text-xs">
-                  {projects
-                    .filter((p) => p.name.toLowerCase().includes(projectFilter.toLowerCase()))
-                    .map((proj) => {
-                      const pct = proj.totalJobs > 0 ? Math.round((proj.completedJobs / proj.totalJobs) * 100) : 0;
-                      return (
-                        <tr key={proj.id} className="hover:bg-[#f8f9fa] transition">
-                          <td className="py-2.5 px-4 font-semibold text-[#201f1e]">
-                            <button
-                              onClick={() => {
-                                setViewMode('wizard');
-                                setActiveTab('jobs');
-                              }}
-                              className="text-left hover:text-[#008272] hover:underline font-bold text-xs cursor-pointer"
-                            >
-                              {proj.name}
-                            </button>
-                            <p className="text-[10px] text-[#605e5c] font-normal">Created: {proj.createdAt}</p>
-                          </td>
-                          <td className="py-2.5 px-4 text-[#323130]">
-                            <p className="font-mono text-xs">{proj.sourceDatabase}</p>
-                            <p className="text-[10px] text-[#605e5c] truncate max-w-xs">{proj.sourceServer}</p>
-                          </td>
-                          <td className="py-2.5 px-4 text-[#008272]">
-                            <p className="font-mono text-xs">{proj.targetWarehouse}</p>
-                            <p className="text-[10px] text-[#605e5c]">{proj.targetWorkspace}</p>
-                          </td>
-                          <td className="py-2.5 px-4 font-semibold text-[#323130]">
-                            {proj.tableCount} tables
-                          </td>
-                          <td className="py-2.5 px-4 w-44">
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between text-[10px] font-semibold text-[#605e5c]">
-                                <span>{proj.completedJobs}/{proj.totalJobs} synced</span>
-                                <span>{pct}%</span>
+                  {loadingProjects ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-xs text-[#605e5c]">
+                        Loading projects from database...
+                      </td>
+                    </tr>
+                  ) : projects.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-10 text-center space-y-2">
+                        <p className="text-xs text-[#605e5c] font-medium">No migration projects configured yet.</p>
+                        <button
+                          onClick={handleCreateNewProject}
+                          className="px-3.5 py-1.5 text-xs font-bold text-white bg-[#008272] hover:bg-[#006e60] rounded shadow-xs transition inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Create Your First Project
+                        </button>
+                      </td>
+                    </tr>
+                  ) : (
+                    projects
+                      .filter((p) => (p.name || '').toLowerCase().includes(projectFilter.toLowerCase()))
+                      .map((proj) => {
+                        const total = proj.total_jobs || 0;
+                        const comp = proj.completed_jobs || 0;
+                        const pct = total > 0 ? Math.round((comp / total) * 100) : 0;
+                        const createdStr = proj.created_at ? new Date(proj.created_at).toLocaleDateString() : '';
+                        const lastRunStr = proj.last_run_at ? new Date(proj.last_run_at).toLocaleString() : 'Never';
+
+                        return (
+                          <tr key={proj.id} className="hover:bg-[#f8f9fa] transition">
+                            <td className="py-2.5 px-4 font-semibold text-[#201f1e]">
+                              <button
+                                onClick={() => handleOpenProject(proj)}
+                                className="text-left hover:text-[#008272] hover:underline font-bold text-xs cursor-pointer"
+                              >
+                                {proj.name}
+                              </button>
+                              <p className="text-[10px] text-[#605e5c] font-normal">Created: {createdStr}</p>
+                            </td>
+                            <td className="py-2.5 px-4 text-[#323130]">
+                              <p className="font-mono text-xs">{proj.source_database}</p>
+                              <p className="text-[10px] text-[#605e5c] truncate max-w-xs">{proj.source_server}</p>
+                            </td>
+                            <td className="py-2.5 px-4 text-[#008272]">
+                              <p className="font-mono text-xs">{proj.target_warehouse_name}</p>
+                              <p className="text-[10px] text-[#605e5c]">{proj.target_workspace_name}</p>
+                            </td>
+                            <td className="py-2.5 px-4 font-semibold text-[#323130]">
+                              {proj.table_count || 0} tables
+                            </td>
+                            <td className="py-2.5 px-4 w-44">
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[10px] font-semibold text-[#605e5c]">
+                                  <span>{comp}/{total} synced</span>
+                                  <span>{pct}%</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-[#edebe9] rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-[#008272] rounded-full transition-all duration-300"
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
                               </div>
-                              <div className="w-full h-1.5 bg-[#edebe9] rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-[#008272] rounded-full transition-all duration-300"
-                                  style={{ width: `${pct}%` }}
-                                />
+                            </td>
+                            <td className="py-2.5 px-4">
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  proj.status === 'SUCCESS'
+                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                    : proj.status === 'FAILED'
+                                    ? 'bg-red-50 text-red-800 border border-red-200'
+                                    : proj.status === 'RUNNING'
+                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                    : 'bg-gray-100 text-gray-700 border border-gray-200'
+                                }`}
+                              >
+                                {proj.status || 'IDLE'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-4 text-[#605e5c] text-[11px]">
+                              {lastRunStr}
+                            </td>
+                            <td className="py-2.5 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleOpenProject(proj)}
+                                  className="px-2.5 py-1 bg-[#f3f2f1] hover:bg-[#edebe9] text-[#201f1e] font-semibold text-xs rounded border border-[#8a8886] transition cursor-pointer"
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteProject(proj.id)}
+                                  className="p-1 hover:bg-red-50 text-red-600 rounded border border-transparent hover:border-red-200 cursor-pointer"
+                                  title="Delete Project"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-4">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                              {proj.status}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-4 text-[#605e5c] text-[11px]">
-                            {proj.lastRunAt || 'Never'}
-                          </td>
-                          <td className="py-2.5 px-4 text-right">
-                            <button
-                              onClick={() => {
-                                setViewMode('wizard');
-                                setActiveTab('jobs');
-                              }}
-                              className="px-2.5 py-1 bg-[#f3f2f1] hover:bg-[#edebe9] text-[#201f1e] font-semibold text-xs rounded border border-[#8a8886] transition cursor-pointer"
-                            >
-                              Open
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            </td>
+                          </tr>
+                        );
+                      })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1642,7 +1716,7 @@ export const DataIngestionApp: React.FC = () => {
                       </button>
 
                       <button
-                        onClick={fetchConfiguredJobs}
+                        onClick={() => fetchConfiguredJobs()}
                         disabled={loadingJobs}
                         className="p-1 bg-[#f3f2f1] hover:bg-[#edebe9] rounded border border-[#8a8886] text-[#323130] cursor-pointer"
                         title="Refresh"
