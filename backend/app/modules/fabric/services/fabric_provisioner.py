@@ -140,6 +140,67 @@ def add_workspace_admin_role(
     return False
 
 
+def get_workspace_role_assignments(token: str, workspace_id: str) -> list[dict]:
+    """Retrieve all role assignments for a workspace."""
+    url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/roleAssignments"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+        if resp.status_code == 200:
+            return resp.json().get("value", [])
+    except Exception as e:
+        logger.warning(f"Failed to fetch role assignments for workspace {workspace_id}: {e}")
+    return []
+
+
+def list_user_workspaces(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    user_object_id: str,
+    allowed_roles: list[str] | None = None,
+) -> list[dict]:
+    """
+    List all Fabric workspaces where the given user_object_id has Member, Admin, or Contributor access.
+    """
+    if allowed_roles is None:
+        allowed_roles = ["Admin", "Member", "Contributor"]
+    allowed_roles_lower = [r.strip().lower() for r in allowed_roles]
+
+    token = get_fabric_sp_token(tenant_id, client_id, client_secret)
+    all_workspaces = list_existing_workspaces(token)
+    user_oid_clean = user_object_id.strip().lower()
+
+    user_accessible_workspaces = []
+
+    def check_workspace(ws: dict) -> dict | None:
+        ws_id = ws.get("id")
+        if not ws_id:
+            return None
+        roles = get_workspace_role_assignments(token, ws_id)
+        for r in roles:
+            principal = r.get("principal", {})
+            p_id = str(principal.get("id", "")).strip().lower()
+            role_name = r.get("role", "")
+            if p_id == user_oid_clean and role_name.lower() in allowed_roles_lower:
+                return {
+                    "id": ws_id,
+                    "displayName": ws.get("displayName", ""),
+                    "description": ws.get("description", ""),
+                    "capacityId": ws.get("capacityId", ""),
+                    "userRole": role_name,
+                }
+        return None
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = executor.map(check_workspace, all_workspaces)
+        for res in results:
+            if res:
+                user_accessible_workspaces.append(res)
+
+    return user_accessible_workspaces
+
+
 def list_workspace_items(token: str, workspace_id: str) -> list[dict]:
     """List all items (Lakehouses, Warehouses, Notebooks) in workspace."""
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/items"

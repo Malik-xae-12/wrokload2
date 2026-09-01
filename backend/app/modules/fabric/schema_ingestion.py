@@ -220,3 +220,22 @@ class SyncJobRunRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ListUserWorkspacesRequest(BaseModel):
+    tenant_id: str = Field(..., description="Azure AD Tenant ID")
+    client_id: str = Field(..., description="Service Principal Client ID")
+    client_secret: str = Field(..., description="Service Principal Client Secret")
+    user_object_id: str = Field(..., description="Target User Object ID (Azure AD GUID)")
+    allowed_roles: list[str] = Field(
+        default=["Admin", "Member", "Contributor"],
+        description="Roles to filter for (e.g. Admin, Member, Contributor)",
+    )
+
+
+class UserWorkspaceInfo(BaseModel):
+    id: str
+    displayName: str
+    description: str | None = None
+    capacityId: str | None = None
+    userRole: str
