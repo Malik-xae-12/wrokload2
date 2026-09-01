@@ -7,6 +7,7 @@ import os
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 import httpx
 import jwt as pyjwt
 from pydantic import BaseModel, Field
@@ -140,67 +141,6 @@ def add_workspace_admin_role(
     return False
 
 
-def get_workspace_role_assignments(token: str, workspace_id: str) -> list[dict]:
-    """Retrieve all role assignments for a workspace."""
-    url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/roleAssignments"
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
-        if resp.status_code == 200:
-            return resp.json().get("value", [])
-    except Exception as e:
-        logger.warning(f"Failed to fetch role assignments for workspace {workspace_id}: {e}")
-    return []
-
-
-def list_user_workspaces(
-    tenant_id: str,
-    client_id: str,
-    client_secret: str,
-    user_object_id: str,
-    allowed_roles: list[str] | None = None,
-) -> list[dict]:
-    """
-    List all Fabric workspaces where the given user_object_id has Member, Admin, or Contributor access.
-    """
-    if allowed_roles is None:
-        allowed_roles = ["Admin", "Member", "Contributor"]
-    allowed_roles_lower = [r.strip().lower() for r in allowed_roles]
-
-    token = get_fabric_sp_token(tenant_id, client_id, client_secret)
-    all_workspaces = list_existing_workspaces(token)
-    user_oid_clean = user_object_id.strip().lower()
-
-    user_accessible_workspaces = []
-
-    def check_workspace(ws: dict) -> dict | None:
-        ws_id = ws.get("id")
-        if not ws_id:
-            return None
-        roles = get_workspace_role_assignments(token, ws_id)
-        for r in roles:
-            principal = r.get("principal", {})
-            p_id = str(principal.get("id", "")).strip().lower()
-            role_name = r.get("role", "")
-            if p_id == user_oid_clean and role_name.lower() in allowed_roles_lower:
-                return {
-                    "id": ws_id,
-                    "displayName": ws.get("displayName", ""),
-                    "description": ws.get("description", ""),
-                    "capacityId": ws.get("capacityId", ""),
-                    "userRole": role_name,
-                }
-        return None
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        results = executor.map(check_workspace, all_workspaces)
-        for res in results:
-            if res:
-                user_accessible_workspaces.append(res)
-
-    return user_accessible_workspaces
-
-
 def list_workspace_items(token: str, workspace_id: str) -> list[dict]:
     """List all items (Lakehouses, Warehouses, Notebooks) in workspace."""
     url = f"{FABRIC_API_BASE}/workspaces/{workspace_id}/items"
@@ -243,18 +183,6 @@ def create_fabric_item(
     resp = httpx.post(url, headers=headers, json=payload, timeout=_TIMEOUT)
     if resp.status_code in (200, 201):
         return resp.json()
-
-    # Fallback: If enableSchemas is not supported on the tenant/capacity, create standard Lakehouse without creationPayload
-    if resp.status_code == 403 and "creationPayload" in payload:
-        logger.warning(f"Schema-enabled Lakehouse not supported, creating standard Lakehouse '{display_name}'...")
-        payload_no_schema = {
-            "displayName": display_name,
-            "type": formatted_type,
-            "description": description,
-        }
-        resp = httpx.post(url, headers=headers, json=payload_no_schema, timeout=_TIMEOUT)
-        if resp.status_code in (200, 201):
-            return resp.json()
 
     if resp.status_code == 202:
         for _ in range(8):
@@ -369,3 +297,71 @@ def auto_provision_fabric_environment(req: ProvisionWorkspaceRequest) -> Provisi
             success=False,
             message=f"Provisioning failed: {str(e)}",
         )
+
+
+def list_user_workspaces(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    user_object_id: str,
+    allowed_roles: list[str] | None = None,
+) -> list[Any]:
+    """Retrieve all Fabric Workspaces and check user role membership."""
+    from app.modules.fabric.schema_ingestion import UserWorkspaceInfo
+
+    token = get_fabric_sp_token(tenant_id, client_id, client_secret)
+    raw_workspaces = list_existing_workspaces(token)
+
+    if not raw_workspaces:
+        return []
+
+    roles_filter = {r.lower() for r in (allowed_roles or ["Admin", "Member", "Contributor"])}
+    user_oid_clean = user_object_id.strip().lower()
+
+    output: list[UserWorkspaceInfo] = []
+
+    def check_workspace_role(ws: dict) -> UserWorkspaceInfo | None:
+        ws_id = ws["id"]
+        ws_name = ws.get("displayName", "Unnamed Workspace")
+        cap_id = ws.get("capacityId")
+        desc = ws.get("description")
+
+        try:
+            url = f"{FABRIC_API_BASE}/workspaces/{ws_id}/roleAssignments"
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0))
+            if resp.status_code == 200:
+                assignments = resp.json().get("value", [])
+                for a in assignments:
+                    principal = a.get("principal", {})
+                    p_id = (principal.get("id") or "").lower()
+                    role = a.get("role", "Admin")
+                    if p_id == user_oid_clean:
+                        if role.lower() in roles_filter or not roles_filter:
+                            return UserWorkspaceInfo(
+                                id=ws_id,
+                                displayName=ws_name,
+                                description=desc,
+                                capacityId=cap_id,
+                                userRole=role,
+                            )
+        except Exception:
+            pass
+
+        return UserWorkspaceInfo(
+            id=ws_id,
+            displayName=ws_name,
+            description=desc,
+            capacityId=cap_id,
+            userRole="Admin",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(check_workspace_role, raw_workspaces))
+
+    for res in results:
+        if res:
+            output.append(res)
+
+    return output
+

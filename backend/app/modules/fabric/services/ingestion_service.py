@@ -198,7 +198,6 @@ def get_target_connection(creds: FabricTargetCredentials) -> pyodbc.Connection:
         try:
             db_token_struct = _format_token_for_pyodbc(creds.access_token)
             conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Encrypt=yes;TrustServerCertificate=no;"
-            conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Encrypt=yes;TrustServerCertificate=yes;"
             SQL_COPT_SS_ACCESS_TOKEN = 1256
             conn = pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: db_token_struct}, timeout=30)
             try:
@@ -215,7 +214,6 @@ def get_target_connection(creds: FabricTargetCredentials) -> pyodbc.Connection:
         try:
             token_struct = _get_azure_sql_access_token(tenant_id, creds.client_id, creds.client_secret)
             conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Encrypt=yes;TrustServerCertificate=no;"
-            conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Encrypt=yes;TrustServerCertificate=yes;"
             SQL_COPT_SS_ACCESS_TOKEN = 1256
             conn = pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct}, timeout=30)
             logger.info("Successfully connected to Fabric SQL Endpoint via Service Principal: %s / %s", server, database)
