@@ -1,4 +1,4 @@
-name: Build and deploy Backend
+name: accelerator-backend
 
 on:
   push:
@@ -56,11 +56,10 @@ jobs:
           name: python-app
           path: .
           
-      - name: 'Deploy to Azure Web App'
+      
+      - name: Deploy to Azure
         uses: azure/webapps-deploy@v2
-        id: deploy-to-webapp
         with:
-          app-name: TrinityBack
-          slot-name: 'Production'
+          app-name: fabric-accelerator-api
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_API }}
-          package: .
+          package: backend
