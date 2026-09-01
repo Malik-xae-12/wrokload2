@@ -8,6 +8,10 @@ on:
       - 'frontend/**'
   workflow_dispatch:
 
+concurrency:
+  group: frontend-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
