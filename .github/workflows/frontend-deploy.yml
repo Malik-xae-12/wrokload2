@@ -6,15 +6,12 @@ on:
       - main
     paths:
       - 'frontend/**'
-      - 'workload/**'
       - '.github/workflows/frontend-deploy.yml'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      NODE_OPTIONS: "--max-old-space-size=4096"
 
     steps:
       - name: Checkout code
@@ -25,30 +22,20 @@ jobs:
         with:
           node-version: '22.x'
 
-      - name: Build Frontend & Fabric Workload SDK
+      - name: Install & Build Frontend
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: |
-          echo "=== 1. Building Accelerator Frontend React App ==="
           cd frontend
           npm install --no-audit --no-fund
           npm run build
-          
-          echo "=== 2. Building Microsoft Fabric Workload SDK ==="
-          cd ../workload
-          npm install --no-audit --no-fund --legacy-peer-deps
-          npm run build:prod
-          
-          echo "=== 3. Merging Frontend and Workload SDK ==="
-          mkdir -p ../build/Frontend/app
-          cp -r ../frontend/dist/* ../build/Frontend/app/
-          cp ../frontend/startup.sh ../build/Frontend/startup.sh
+          cp startup.sh dist/startup.sh
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: frontend-build
-          path: build/Frontend
+          path: frontend/dist
 
   deploy:
     runs-on: ubuntu-latest
