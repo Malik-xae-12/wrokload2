@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -31,5 +31,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(Microsoft Fabric Frontend Server listening on port );
+  console.log('Microsoft Fabric Frontend Server listening on port ' + PORT);
 });
